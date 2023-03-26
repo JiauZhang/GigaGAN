@@ -116,11 +116,25 @@ class L2MultiheadAttention(nn.Module):
         return self.out_proj(PXAV)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size):
+    def __init__(self, in_channels, style_dim, num_heads=4):
         super().__init__()
 
+        self.embedding = nn.Linear(style_dim, in_channels)
+        self.in_channels = in_channels
+        self.l2attn = L2MultiheadAttention(in_channels, num_heads)
+
     def forward(self, input, style):
-        pass
+        batch, h, w = input.shape[:3]
+        # style: [N, style_dim] --> [N, C]
+        style_embed = self.embedding(style)
+        # input: [N, C, H, W] --> [N, H, W, C] --> [N, HWC]
+        input = input.permute(0, 2, 3, 1).view(batch, -1)
+        # [N, HWC+C] --> [N, HW+1, C]
+        input_stype = torch.cat([input, style_embed], dim=-1).view(batch, -1, self.in_channels)
+        # [N, HW+1, C]
+        output = torch.split(self.l2attn(input_stype), [h*w, 1], dim=1)[0]
+        output = output.view(batch, h, w, -1).permute(0, 3, 1, 2)
+        return output
 
 class CrossAttention(nn.Module):
     def __init__(self):
