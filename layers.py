@@ -115,6 +115,57 @@ class L2MultiheadAttention(nn.Module):
         )
         return self.out_proj(PXAV)
 
+class FeedForward(nn.Module):
+    r"""
+    A feed-forward layer.
+
+    Parameters:
+        dim (`int`): The number of channels in the input.
+        dim_out (`int`, *optional*): The number of channels in the output. If not given, defaults to `dim`.
+        mult (`int`, *optional*, defaults to 4): The multiplier to use for the hidden dimension.
+        dropout (`float`, *optional*, defaults to 0.0): The dropout probability to use.
+        activation_fn (`str`, *optional*, defaults to `"geglu"`): Activation function to be used in feed-forward.
+        final_dropout (`bool` *optional*, defaults to False): Apply a final dropout.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        dim_out: Optional[int] = None,
+        mult: int = 4,
+        dropout: float = 0.0,
+        activation_fn: str = "geglu",
+        final_dropout: bool = False,
+    ):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        dim_out = dim_out if dim_out is not None else dim
+
+        if activation_fn == "gelu":
+            act_fn = GELU(dim, inner_dim)
+        if activation_fn == "gelu-approximate":
+            act_fn = GELU(dim, inner_dim, approximate="tanh")
+        elif activation_fn == "geglu":
+            act_fn = GEGLU(dim, inner_dim)
+        elif activation_fn == "geglu-approximate":
+            act_fn = ApproximateGELU(dim, inner_dim)
+
+        self.net = nn.ModuleList([])
+        # project in
+        self.net.append(act_fn)
+        # project dropout
+        self.net.append(nn.Dropout(dropout))
+        # project out
+        self.net.append(nn.Linear(inner_dim, dim_out))
+        # FF as used in Vision Transformer, MLP-Mixer, etc. have a final dropout
+        if final_dropout:
+            self.net.append(nn.Dropout(dropout))
+
+    def forward(self, hidden_states):
+        for module in self.net:
+            hidden_states = module(hidden_states)
+        return hidden_states
+
 class SelfAttention(nn.Module):
     def __init__(self, in_channels, style_dim, num_heads=4):
         super().__init__()
@@ -122,18 +173,31 @@ class SelfAttention(nn.Module):
         self.embedding = nn.Linear(style_dim, in_channels)
         self.in_channels = in_channels
         self.l2attn = L2MultiheadAttention(in_channels, num_heads)
+        self.ff = nn.Sequential(
+            nn.GELU(),
+            nn.Linear(in_channels, in_channels),
+            nn.GELU(),
+            nn.Linear(in_channels, in_channels),
+        )
+        self.ln1 = nn.LayerNorm(in_channels)
+        self.ln2 = nn.LayerNorm(in_channels)
 
     def forward(self, input, style):
-        batch, h, w = input.shape[:3]
+        batch, h, w, c = input.shape
         # style: [N, style_dim] --> [N, C]
         style_embed = self.embedding(style)
         # input: [N, C, H, W] --> [N, H, W, C] --> [N, HWC]
-        input = input.permute(0, 2, 3, 1).view(batch, -1)
+        input = input.permute(0, 2, 3, 1).view(batch, h*w*c)
         # [N, HWC+C] --> [N, HW+1, C]
-        input_stype = torch.cat([input, style_embed], dim=-1).view(batch, -1, self.in_channels)
+        input_stype = torch.cat([input, style_embed], dim=-1).view(batch, h*w+1, c)
         # [N, HW+1, C]
-        output = torch.split(self.l2attn(input_stype), [h*w, 1], dim=1)[0]
-        output = output.view(batch, h, w, -1).permute(0, 3, 1, 2)
+        out1 = self.l2attn(input_stype)
+        out1 = self.ln1(out1 + input_stype)
+        out2 = self.ff(out1.veiw(batch*(h*w+1), c)).view(batch, h*w+1, c)
+        output = self.ln2(out2 + out1)
+        # [N, HW, C]
+        output = torch.split(output, [h*w, 1], dim=1)[0]
+        output = output.view(batch, h, w, c).permute(0, 3, 1, 2)
         return output
 
 class CrossAttention(nn.Module):
