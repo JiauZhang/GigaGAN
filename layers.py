@@ -82,10 +82,10 @@ class L2MultiheadAttention(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
-        nn.init.xavier_uniform_(self.q_weight.view(self.embed_dim, self.embed_dim))
-        nn.init.xavier_uniform_(self.v_weight.view(self.embed_dim, self.embed_dim))
+        nn.init.xavier_uniform_(self.q_weight.reshape(self.embed_dim, self.embed_dim))
+        nn.init.xavier_uniform_(self.v_weight.reshape(self.embed_dim, self.embed_dim))
 
-    def forward(self, x, y=None):
+    def forward(self, x):
         """
         Args:
             x: (T, N, D)
@@ -93,10 +93,9 @@ class L2MultiheadAttention(nn.Module):
         """
 
         T, N, _ = x.shape
-        if y is None:
-            y = x
+
         q = torch.einsum("tbm,mhd->tbhd", x, self.q_weight)
-        k = torch.einsum("tbm,mhd->tbhd", y, self.q_weight)
+        k = torch.einsum("tbm,mhd->tbhd", x, self.q_weight)
         squared_dist = (
             torch.einsum("tbhd,tbhd->tbh", q, q).unsqueeze(1)
             + torch.einsum("sbhd,sbhd->sbh", k, k).unsqueeze(0)
@@ -107,7 +106,7 @@ class L2MultiheadAttention(nn.Module):
         A = torch.einsum("mhd,nhd->hmn", self.q_weight, self.q_weight) / math.sqrt(
             self.head_dim
         )
-        XA = torch.einsum("tbm,hmn->tbhn", y, A)
+        XA = torch.einsum("tbm,hmn->tbhn", x, A)
         PXA = torch.einsum("tsbh,sbhm->tbhm", attn_weights, XA)
         PXAV = torch.einsum("tbhm,mhd->tbhd", PXA, self.v_weight).reshape(
             T, N, self.embed_dim
@@ -131,54 +130,53 @@ class SelfAttention(nn.Module):
         self.ln2 = nn.LayerNorm(in_channels)
 
     def forward(self, input, style):
-        batch, h, w, c = input.shape
+        batch, c, h, w = input.shape
         # style: [N, style_dim] --> [N, C]
         style_embed = self.embedding(style)
         # input: [N, C, H, W] --> [N, H, W, C] --> [N, HWC]
-        input = input.permute(0, 2, 3, 1).view(batch, h*w*c)
+        input = input.permute(0, 2, 3, 1).reshape(batch, h*w*c)
         # [N, HWC+C] --> [N, HW+1, C]
-        input_stype = torch.cat([input, style_embed], dim=-1).view(batch, h*w+1, c)
+        input_stype = torch.cat([input, style_embed], dim=-1).reshape(batch, h*w+1, c)
         # [N, HW+1, C]
         out1 = self.l2attn(input_stype)
         out1 = self.ln1(out1 + input_stype)
-        out2 = self.ff(out1.veiw(batch*(h*w+1), c)).view(batch, h*w+1, c)
+        out2 = self.ff(out1.view(batch*(h*w+1), c)).view(batch, h*w+1, c)
         output = self.ln2(out2 + out1)
         # [N, HW, C]
         output = torch.split(output, [h*w, 1], dim=1)[0]
-        output = output.view(batch, h, w, c).permute(0, 3, 1, 2)
+        output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
         return output
 
 class TextEncoder(nn.Module):
-    def __init__(self, input_dim, output_dim, num_heads=8):
+    def __init__(self, input_dim, num_heads=8):
         super().__init__()
 
-        self.embedding = nn.Linear(input_dim, output_dim)
-        self.l2attn = L2MultiheadAttention(output_dim, num_heads)
+        self.l2attn = L2MultiheadAttention(input_dim, num_heads)
         self.ff = nn.Sequential(
             nn.GELU(),
-            nn.Linear(output_dim, output_dim),
+            nn.Linear(input_dim, input_dim),
             nn.GELU(),
-            nn.Linear(output_dim, output_dim),
+            nn.Linear(input_dim, input_dim),
         )
-        self.ln1 = nn.LayerNorm(output_dim)
-        self.ln2 = nn.LayerNorm(output_dim)
+        self.ln1 = nn.LayerNorm(input_dim)
+        self.ln2 = nn.LayerNorm(input_dim)
 
     def forward(self, text_embeds):
-        # text_embeds: [batch, seq_len, embed_dim]
-        seq_len = text_embeds.shape[1]
         out1 = self.l2attn(text_embeds)
         out1 = self.ln1(out1 + text_embeds)
         out2 = self.ff(out1)
         output = self.ln2(out2 + out1)
-        return torch.split(output, [seq_len-1, 1], dim=1)
+        return output
 
 class CrossAttention(nn.Module):
-    def __init__(self, in_channels, embed_dim, num_heads=8):
+    def __init__(self, in_channels, embed_dim, num_heads=8, bias=False):
         super().__init__()
 
-        self.embedding = nn.Linear(embed_dim, in_channels)
         self.in_channels = in_channels
-        self.l2attn = L2MultiheadAttention(in_channels, num_heads)
+        self.to_q = nn.Linear(in_channels, in_channels, bias=bias)
+        self.to_k = nn.Linear(embed_dim, in_channels, bias=bias)
+        self.to_v = nn.Linear(embed_dim, in_channels, bias=bias)
+        self.mha = nn.MultiheadAttention(in_channels, num_heads, batch_first=True)
         self.ff = nn.Sequential(
             nn.GELU(),
             nn.Linear(in_channels, in_channels),
@@ -189,15 +187,16 @@ class CrossAttention(nn.Module):
         self.ln2 = nn.LayerNorm(in_channels)
 
     def forward(self, image_embeds, text_embeds):
-        batch, h, w, c = image_embeds.shape
-        # text_embeds: [N, seq_len, embed_dim] --> [N, seq_len, in_channels]
-        text_embeds = self.embedding(text_embeds)
+        batch, c, h, w = image_embeds.shape
         # image_embeds: [N, C, H, W] --> [N, H, W, C] --> [N, HW, C]
-        image_embeds = image_embeds.permute(0, 2, 3, 1).view(batch, h*w, c)
-        out1 = self.l2attn(image_embeds, text_embeds)
-        out1 = self.ln1(out1 + image_embeds)
+        image_embeds = image_embeds.permute(0, 2, 3, 1).reshape(batch, h*w, c)
+        query = self.to_q(image_embeds)
+        key = self.to_k(text_embeds)
+        value = self.to_v(text_embeds)
+        attn_output, attn_output_weights = self.mha(query, key, value)
+        out1 = self.ln1(attn_output + image_embeds)
         out2 = self.ff(out1)
         # [N, HW, C]
         output = self.ln2(out2 + out1)
-        output = output.view(batch, h, w, c).permute(0, 3, 1, 2)
+        output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
         return output
