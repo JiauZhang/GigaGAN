@@ -135,10 +135,10 @@ class L2MultiheadAttention(nn.Module):
         return self.out_proj(PXAV)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channels, style_dim, num_heads=8):
+    def __init__(self, in_channels, style_dim=None, num_heads=8):
         super().__init__()
-
-        self.embedding = nn.Linear(style_dim, in_channels)
+        if style_dim is not None:
+            self.embedding = nn.Linear(style_dim, in_channels)
         self.in_channels = in_channels
         self.l2attn = L2MultiheadAttention(in_channels, num_heads)
         self.ff = nn.Sequential(
@@ -150,21 +150,24 @@ class SelfAttention(nn.Module):
         self.ln1 = nn.LayerNorm(in_channels)
         self.ln2 = nn.LayerNorm(in_channels)
 
-    def forward(self, input, style):
+    def forward(self, input, style=None):
         batch, c, h, w = input.shape
-        # style: [N, style_dim] --> [N, C]
-        style_embed = self.embedding(style)
         # input: [N, C, H, W] --> [N, H, W, C] --> [N, HWC]
         input = input.permute(0, 2, 3, 1).reshape(batch, h*w*c)
-        # [N, HWC+C] --> [N, HW+1, C]
-        input_stype = torch.cat([input, style_embed], dim=-1).reshape(batch, h*w+1, c)
+        if style is not None:
+            # style: [N, style_dim] --> [N, C]
+            style_embed = self.embedding(style)
+            # [N, HWC+C] --> [N, HW+1, C]
+            input_style = torch.cat([input, style_embed], dim=-1).reshape(batch, h*w+1, c)
+        else:
+            input_style = input.reshape(batch, h*w, c)
         # [N, HW+1, C]
-        out1 = self.l2attn(input_stype)
-        out1 = self.ln1(out1 + input_stype)
-        out2 = self.ff(out1.view(batch*(h*w+1), c)).view(batch, h*w+1, c)
+        out1 = self.l2attn(input_style)
+        out1 = self.ln1(out1 + input_style)
+        out2 = self.ff(out1.view(-1, c)).view(batch, -1, c)
         output = self.ln2(out2 + out1)
         # [N, HW, C]
-        output = torch.split(output, [h*w, 1], dim=1)[0]
+        output = output[:, :h*w, :]
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
         return output
 

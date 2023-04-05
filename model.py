@@ -354,20 +354,18 @@ class Discriminator(nn.Module):
             1024: 16 * channel_multiplier,
         }
 
-        convs = [ConvLayer(3, channels[size], 1)]
-
+        self.heads = nn.ModuleList([ConvLayer(3, channels[size], 1)])
+        self.convs = nn.ModuleList()
+        self.attns = nn.ModuleList()
         log_size = int(math.log(size, 2))
 
         in_channel = channels[size]
-
         for i in range(log_size, 2, -1):
             out_channel = channels[2 ** (i - 1)]
-
-            convs.append(ResBlock(in_channel, out_channel, blur_kernel))
-
+            self.convs.append(ResBlock(in_channel, out_channel, blur_kernel))
+            self.attns.append(SelfAttention(out_channel))
+            self.heads.append(ConvLayer(3, in_channel, 1))
             in_channel = out_channel
-
-        self.convs = nn.Sequential(*convs)
 
         self.stddev_group = 4
         self.stddev_feat = 1
@@ -378,10 +376,26 @@ class Discriminator(nn.Module):
             EqualLinear(channels[4], 1),
         )
 
-    def forward(self, input):
-        out = self.convs(input)
+    def forward(self, inputs):
+        # inputs: 4x --> 8x --> ... --> 64x
+        in_len = len(inputs)
+        # 64x --> 32x --> ... --> 4x
+        input_heads = []
+        for i in range(len(inputs)):
+            input = inputs[in_len-i-1]
+            input_heads.append(self.heads[i](input))
 
-        batch, channel, height, width = out.shape
+        outputs, i = [], 0
+        for conv, attn in zip(self.convs, self.attns):
+            input = input_heads[i]
+            if len(outputs):
+                input = torch.cat([input, outputs[-1]], dim=0)
+            out = conv(input)
+            out = attn(out)
+            outputs.append(out)
+            i += 1
+
+        batch, channel, height, width = outputs[-1].shape
         group = min(batch, self.stddev_group)
         stddev = out.view(
             group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
