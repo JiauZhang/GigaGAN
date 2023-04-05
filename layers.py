@@ -169,20 +169,22 @@ class SelfAttention(nn.Module):
         return output
 
 class TextEncoder(nn.Module):
-    def __init__(self, input_dim, num_heads=8):
+    def __init__(self, in_dim, out_dim, num_heads=8):
         super().__init__()
 
-        self.l2attn = L2MultiheadAttention(input_dim, num_heads)
+        self.embedding = nn.Linear(in_dim, out_dim)
+        self.l2attn = L2MultiheadAttention(out_dim, num_heads)
         self.ff = nn.Sequential(
             nn.GELU(),
-            nn.Linear(input_dim, input_dim),
+            nn.Linear(out_dim, out_dim),
             nn.GELU(),
-            nn.Linear(input_dim, input_dim),
+            nn.Linear(out_dim, out_dim),
         )
-        self.ln1 = nn.LayerNorm(input_dim)
-        self.ln2 = nn.LayerNorm(input_dim)
+        self.ln1 = nn.LayerNorm(out_dim)
+        self.ln2 = nn.LayerNorm(out_dim)
 
     def forward(self, text_embeds):
+        text_embeds = self.embedding(text_embeds)
         out1 = self.l2attn(text_embeds)
         out1 = self.ln1(out1 + text_embeds)
         out2 = self.ff(out1)
@@ -395,7 +397,7 @@ class ModulatedConv2d(nn.Module):
         )
 
         if self.upsample:
-            input = input.view(1, batch * in_channel, height, width)
+            input = input.reshape(1, batch * in_channel, height, width)
             weight = weight.view(
                 batch, self.out_channel, in_channel, self.kernel_size, self.kernel_size
             )
@@ -420,7 +422,7 @@ class ModulatedConv2d(nn.Module):
             out = out.view(batch, self.out_channel, height, width)
 
         else:
-            input = input.view(1, batch * in_channel, height, width)
+            input = input.reshape(1, batch * in_channel, height, width)
             out = conv2d_gradfix.conv2d(
                 input, weight, padding=self.padding, groups=batch
             )

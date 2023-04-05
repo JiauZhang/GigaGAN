@@ -7,7 +7,7 @@ from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
 from layers import (
     PixelNorm, make_kernel, Upsample, Downsample, Blur, EqualConv2d,
     ModulatedConv2d, EqualLinear, NoiseInjection,
-    SelfAttention, CrossAttention,
+    SelfAttention, CrossAttention, TextEncoder,
 )
 
 class ConstantInput(nn.Module):
@@ -87,23 +87,17 @@ def append_if(condition, var, elem):
 
 class Generator(nn.Module):
     def __init__(
-        self,
-        size,
-        style_dim,
-        n_mlp,
-        text_dim,
-        channel_multiplier=2,
-        blur_kernel=[1, 3, 3, 1],
-        lr_mlp=0.01,
+        self, size, style_dim, n_mlp, tin_dim, tout_dim,
+        channel_multiplier=2, blur_kernel=[1, 3, 3, 1], lr_mlp=0.01,
     ):
         super().__init__()
 
         self.size = size
-
+        style_dim = style_dim + tout_dim
         self.style_dim = style_dim
+        self.text_encoder = TextEncoder(tin_dim, tout_dim)
 
         layers = [PixelNorm()]
-
         for i in range(n_mlp):
             layers.append(
                 EqualLinear(
@@ -168,14 +162,13 @@ class Generator(nn.Module):
             )
 
             self.attns.append(SelfAttention(out_channel, style_dim))
-            self.attns.append(CrossAttention(out_channel, text_dim))
+            self.attns.append(CrossAttention(out_channel, tout_dim))
 
             self.to_rgbs.append(ToRGB(out_channel, style_dim))
 
             in_channel = out_channel
 
         self.n_latent = self.log_size * 2 - 2
-        self.text_embeds = torch.randn(1, 12, text_dim)
 
     def make_noise(self):
         device = self.input.input.device
@@ -200,17 +193,17 @@ class Generator(nn.Module):
         return self.style(input)
 
     def forward(
-        self,
-        styles,
-        return_latents=False,
-        inject_index=None,
-        truncation=1,
-        truncation_latent=None,
-        input_is_latent=False,
-        noise=None,
-        randomize_noise=True,
-        return_images=True,
+        self, styles, text_embeds,
+        return_latents=False, inject_index=None, truncation=1, truncation_latent=None,
+        input_is_latent=False, noise=None, randomize_noise=True, return_images=True,
     ):
+        seq_len = text_embeds.shape[1]
+        text_embeds = self.text_encoder(text_embeds)
+        t_local, t_global = torch.split(text_embeds, [seq_len-1, 1], dim=1)
+        # batch, tout_dim
+        t_global = t_global.squeeze(dim=1)
+        styles = [torch.cat([styles, t_global], dim=1)]
+
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
 
@@ -264,7 +257,7 @@ class Generator(nn.Module):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
             out = self_attn(out, latent[:, i + 1])
-            out = cross_attn(out, self.text_embeds)
+            out = cross_attn(out, t_local)
             skip = to_rgb(out, latent[:, i + 2], skip)
             append_if(return_images, images, skip)
 
