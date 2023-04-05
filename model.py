@@ -7,6 +7,7 @@ from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
 from layers import (
     PixelNorm, make_kernel, Upsample, Downsample, Blur, EqualConv2d,
     ModulatedConv2d, EqualLinear, NoiseInjection,
+    SelfAttention, CrossAttention,
 )
 
 class ConstantInput(nn.Module):
@@ -90,6 +91,7 @@ class Generator(nn.Module):
         size,
         style_dim,
         n_mlp,
+        text_dim,
         channel_multiplier=2,
         blur_kernel=[1, 3, 3, 1],
         lr_mlp=0.01,
@@ -133,6 +135,7 @@ class Generator(nn.Module):
         self.num_layers = (self.log_size - 2) * 2 + 1
 
         self.convs = nn.ModuleList()
+        self.attns = nn.ModuleList()
         self.upsamples = nn.ModuleList()
         self.to_rgbs = nn.ModuleList()
         self.noises = nn.Module()
@@ -164,11 +167,15 @@ class Generator(nn.Module):
                 )
             )
 
+            self.attns.append(SelfAttention(out_channel, style_dim))
+            self.attns.append(CrossAttention(out_channel, text_dim))
+
             self.to_rgbs.append(ToRGB(out_channel, style_dim))
 
             in_channel = out_channel
 
         self.n_latent = self.log_size * 2 - 2
+        self.text_embeds = torch.randn(1, 12, text_dim)
 
     def make_noise(self):
         device = self.input.input.device
@@ -202,7 +209,7 @@ class Generator(nn.Module):
         input_is_latent=False,
         noise=None,
         randomize_noise=True,
-        return_features=False,
+        return_images=True,
     ):
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
@@ -243,33 +250,33 @@ class Generator(nn.Module):
 
             latent = torch.cat([latent, latent2], 1)
 
-        features = []
+        images = []
         out = self.input(latent)
-        append_if(return_features, features, out)
         out = self.conv1(out, latent[:, 0], noise=noise[0])
-        append_if(return_features, features, out)
-
         skip = self.to_rgb1(out, latent[:, 1])
+        append_if(return_images, images, skip)
 
         i = 1
-        for conv1, conv2, noise1, noise2, to_rgb in zip(
-            self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
+        for conv1, conv2, noise1, noise2, to_rgb, self_attn, cross_attn in zip(
+            self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs,
+            self.attns[::2], self.attns[1::2],
         ):
             out = conv1(out, latent[:, i], noise=noise1)
-            append_if(return_features, features, out)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            append_if(return_features, features, out)
+            out = self_attn(out, latent[:, i + 1])
+            out = cross_attn(out, self.text_embeds)
             skip = to_rgb(out, latent[:, i + 2], skip)
+            append_if(return_images, images, skip)
 
             i += 2
 
-        image = skip
+        if not return_images:
+            images = [skip]
 
         if return_latents:
-            return image, latent, features
-
+            return images, latent
         else:
-            return image, None, features
+            return images, None
 
 
 class ConvLayer(nn.Sequential):

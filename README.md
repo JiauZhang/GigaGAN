@@ -5,5 +5,5 @@
 Implementation of [GigaGAN: Scaling up GANs for Text-to-Image Synthesis](https://arxiv.org/pdf/2303.05511).
 
 ```shell
-pip install transformers==4.27.4
+pip install transformers==4.27.4 datasets accelerate
 ```
