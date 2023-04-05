@@ -3,6 +3,27 @@ from torch import nn
 from torch.nn import functional as F
 from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
 
+class AdaWeight(nn.Module):
+    def __init__(self, n_kernel, in_channels, out_channels, kernel_size,
+        style_dim=512,
+    ):
+        super().__init__()
+        self.n_kernel = n_kernel
+        # conv weight shape: out_ch, in_ch, k_h, k_w
+        self.weight = nn.Parameter(torch.empty((n_kernel, out_channels, in_channels, kernel_size, kernel_size)))
+        self.reset_parameters()
+        self.ada_weight = nn.Linear(style_dim, n_kernel)
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, style):
+        # batch, n_kernel
+        ada_weight = self.ada_weight(style).softmax(dim=-1)
+        ada_weight = ada_weight.view(-1, self.n_kernel, 1, 1, 1, 1)
+        weight = (ada_weight * self.weight).sum(dim=1)
+        return weight
+
 class PixelNorm(nn.Module):
     def __init__(self):
         super().__init__()
@@ -318,14 +339,8 @@ class ModulatedConv2d(nn.Module):
         fan_in = in_channel * kernel_size ** 2
         self.scale = 1 / math.sqrt(fan_in)
         self.padding = kernel_size // 2
-
-        self.weights = nn.Parameter(
-            torch.randn(self.n_kernel, out_channel, in_channel, kernel_size, kernel_size)
-        )
-        self.ada_weight = EqualLinear(style_dim, n_kernel)
-
+        self.ada_weight = AdaWeight(n_kernel, in_channel, out_channel, kernel_size, style_dim=style_dim)
         self.modulation = EqualLinear(style_dim, in_channel, bias_init=1)
-
         self.demodulate = demodulate
         self.fused = fused
 
@@ -337,10 +352,7 @@ class ModulatedConv2d(nn.Module):
 
     def forward(self, input, style):
         batch, in_channel, height, width = input.shape
-
-        ada_weight = self.ada_weight(style).softmax(dim=-1)
-        ada_weight = ada_weight.view(-1, self.n_kernel, 1, 1, 1, 1)
-        self.weight = (ada_weight * self.weights).sum(dim=1)
+        self.weight = self.ada_weight(style)
 
         if not self.fused:
             weight = self.scale * self.weight.squeeze(0)
