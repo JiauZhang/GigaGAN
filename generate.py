@@ -19,5 +19,5 @@ with torch.no_grad():
         print(images[i].shape)
         utils.save_image(images[i], f"test-{i}.png", nrow=1, normalize=True, value_range=(-1, 1))
 
-    d = Discriminator(image_size)
-    out = d(images)
+    d = Discriminator(image_size, tin_dim)
+    out = d(images, text_embeds[:, -1, :])

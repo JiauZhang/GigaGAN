@@ -337,9 +337,45 @@ class ResBlock(nn.Module):
 
         return out
 
+class Predictor(nn.Module):
+    def __init__(self, in_channel, tin_dim):
+        super().__init__()
+        layers = []
+        inc, outc = in_channel, 256
+        for i in range(4):
+            layers.append(nn.Conv2d(inc, outc, 1))
+            layers.append(nn.GELU())
+            inc = outc
+        self.conv1 = nn.Sequential(*layers)
+        self.global_avg = nn.AdaptiveAvgPool2d(1)
+        self.V = nn.Linear(tin_dim, 256)
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channel, 256, 1),
+            nn.GELU(),
+        )
+
+    def forward(self, image_embeds, text_embeds):
+        # [n, c, h, w] --> [n, 256, h, w]
+        out1 = self.conv1(image_embeds)
+        # [n, 256]
+        out1 = self.global_avg(out1).squeeze()
+        # [n, tin_dim] --> [n, 256]
+        out2 = self.V(text_embeds)
+        # [n, 256] x [n, 256]
+        batch = image_embeds.shape[0]
+        if batch != out2.shape[0]:
+            out2 = out2.repeat(batch // out2.shape[0], 1)
+        out = torch.mul(out1, out2).sum(dim=1, keepdim=True)
+        # [n, c, h, w] --> [n, 256, h, w]
+        out3 = self.conv2(image_embeds)
+        # [n, 256, h, w] --> [n, 256]
+        out3 = self.global_avg(out3).squeeze()
+        # [n, 256] --> [n, 1]
+        out = (out + out3).sum(dim=1, keepdim=True)
+        return out
 
 class Discriminator(nn.Module):
-    def __init__(self, size, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
+    def __init__(self, size, tin_dim, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
         super().__init__()
 
         channels = {
@@ -357,6 +393,7 @@ class Discriminator(nn.Module):
         self.heads = nn.ModuleList([ConvLayer(3, channels[size], 1)])
         self.convs = nn.ModuleList()
         self.attns = nn.ModuleList()
+        self.predictors = nn.ModuleList()
         log_size = int(math.log(size, 2))
 
         in_channel = channels[size]
@@ -366,17 +403,10 @@ class Discriminator(nn.Module):
             self.attns.append(SelfAttention(out_channel))
             self.heads.append(ConvLayer(3, in_channel, 1))
             in_channel = out_channel
+            self.predictors.append(Predictor(in_channel, tin_dim))
 
-        self.stddev_group = 4
-        self.stddev_feat = 1
-
-        self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
-        self.final_linear = nn.Sequential(
-            EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
-            EqualLinear(channels[4], 1),
-        )
-
-    def forward(self, inputs):
+    def forward(self, inputs, text_embeds):
+        batch = text_embeds.shape[0]
         # inputs: 4x --> 8x --> ... --> 64x
         in_len = len(inputs)
         # 64x --> 32x --> ... --> 4x
@@ -395,20 +425,10 @@ class Discriminator(nn.Module):
             outputs.append(out)
             i += 1
 
-        batch, channel, height, width = outputs[-1].shape
-        group = min(batch, self.stddev_group)
-        stddev = out.view(
-            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
-        )
-        stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
-        stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
-        stddev = stddev.repeat(group, 1, height, width)
-        out = torch.cat([out, stddev], 1)
+        preds = []
+        for out, predictor in zip(outputs, self.predictors):
+            preds.append(predictor(out, text_embeds).view(batch, -1))
 
-        out = self.final_conv(out)
-
-        out = out.view(batch, -1)
-        out = self.final_linear(out)
-
+        out = torch.cat(preds, dim=1)
         return out
 
