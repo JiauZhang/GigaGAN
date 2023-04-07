@@ -375,7 +375,7 @@ class Predictor(nn.Module):
         return out
 
 class Discriminator(nn.Module):
-    def __init__(self, size, tin_dim, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
+    def __init__(self, size, tin_dim, tout_dim, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
         super().__init__()
 
         channels = {
@@ -403,10 +403,13 @@ class Discriminator(nn.Module):
             self.attns.append(SelfAttention(out_channel))
             self.heads.append(ConvLayer(3, in_channel, 1))
             in_channel = out_channel
-            self.predictors.append(Predictor(in_channel, tin_dim))
+            self.predictors.append(Predictor(in_channel, tout_dim))
+        self.text_encoder = TextEncoder(tin_dim, tout_dim)
 
     def forward(self, inputs, text_embeds):
         batch = text_embeds.shape[0]
+        # [n, seq_len, tin_dim] --> [n, tout_dim]
+        text_embeds = self.text_encoder(text_embeds)[:, -1]
         # inputs: 4x --> 8x --> ... --> 64x
         in_len = len(inputs)
         # 64x --> 32x --> ... --> 4x
