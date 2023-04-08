@@ -99,7 +99,7 @@ def multi_scale(image):
     images.append(image.detach())
     return images
 
-def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, device):
+def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim, g_ema, device):
     loader = sample_data(loader)
     pbar = tqdm(range(args.iter))
     mean_path_length = 0
@@ -126,12 +126,11 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         if i > args.iter:
             print("Done!")
-
             break
 
         image_text = next(loader)
         real_img = multi_scale(image_text['image'])
-        text_embeds = torch.randn(args.batch, 16, 512).to(args.device)
+        text_embeds = text_encoder(image_text['text'])
 
         requires_grad(generator, False)
         requires_grad(discriminator, True)
@@ -394,6 +393,7 @@ if __name__ == "__main__":
         return data
     dataset = load_dataset('lambdalabs/pokemon-blip-captions', split="train", cache_dir='.')
     dataset = dataset.with_transform(preprocess)
-    dataloader = DataLoader(dataset, batch_size=args.batch)
+    dataloader = DataLoader(dataset, batch_size=args.batch, shuffle=True, drop_last=True)
+    text_encoder = CLIPText(args.device)
 
-    train(args, dataloader, generator, discriminator, g_optim, d_optim, g_ema, device)
+    train(args, dataloader, generator, discriminator, text_encoder, g_optim, d_optim, g_ema, device)

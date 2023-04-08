@@ -2,10 +2,11 @@ import torch, transformers
 from transformers import CLIPTokenizer, CLIPTextModel
 
 class CLIPText():
-    def __init__(self, model_id='openai/clip-vit-base-patch32', cache_dir='.'):
+    def __init__(self, device, model_id='openai/clip-vit-base-patch32', cache_dir='.'):
         self.model_id = model_id
+        self.device = device
         transformers.logging.set_verbosity_error()
-        self.text_encoder = CLIPTextModel.from_pretrained(self.model_id, cache_dir=cache_dir)
+        self.text_encoder = CLIPTextModel.from_pretrained(self.model_id, cache_dir=cache_dir).to(device)
         self.tokenizer = CLIPTokenizer.from_pretrained(self.model_id, cache_dir=cache_dir)
         transformers.logging.set_verbosity_warning()
 
@@ -16,7 +17,7 @@ class CLIPText():
             truncation=True, return_tensors="pt",
         )
         text_input_ids = text_inputs.input_ids
-        text_embeds = self.text_encoder(text_input_ids)
+        text_embeds = self.text_encoder(text_input_ids.to(self.device))
         text_embeds = text_embeds[0]
         return text_embeds
 
