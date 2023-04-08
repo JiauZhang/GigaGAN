@@ -6,6 +6,10 @@ from torchvision import transforms, utils
 from tqdm import tqdm
 from op import conv2d_gradfix
 from model import Generator, Discriminator
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from torchvision.transforms.functional import resize
+from clip import CLIPText
 
 def requires_grad(model, flag=True):
     for p in model.parameters():
@@ -87,10 +91,17 @@ def set_grad_none(model, targets):
         if n in targets:
             p.grad = None
 
+def multi_scale(image):
+    device = image.device
+    images = []
+    for size in [4, 8, 16, 32]:
+        images.append(resize(image, (size, size)).detach().to(device))
+    images.append(image.detach())
+    return images
 
 def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, device):
     loader = sample_data(loader)
-    pbar = range(args.iter)
+    pbar = tqdm(range(args.iter))
     mean_path_length = 0
 
     d_loss_val = 0
@@ -118,18 +129,19 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
             break
 
-        real_img = next(loader)
-        real_img = real_img.to(device)
+        image_text = next(loader)
+        real_img = multi_scale(image_text['image'])
+        text_embeds = torch.randn(args.batch, 16, 512).to(args.device)
 
         requires_grad(generator, False)
         requires_grad(discriminator, True)
 
-        noise = mixing_noise(args.batch, args.latent, args.mixing, device)
-        fake_img, _ = generator(noise)
+        noise = torch.randn(args.batch, args.latent, device=device)
+        fake_img, _ = generator(noise, text_embeds)
         real_img_aug = real_img
 
-        fake_pred = discriminator(fake_img)
-        real_pred = discriminator(real_img_aug)
+        fake_pred = discriminator(fake_img, text_embeds)
+        real_pred = discriminator(real_img_aug, text_embeds)
         d_loss = d_logistic_loss(real_pred, fake_pred)
 
         loss_dict["d"] = d_loss
@@ -140,29 +152,13 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
         d_loss.backward()
         d_optim.step()
 
-        d_regularize = i % args.d_reg_every == 0
-
-        if d_regularize:
-            real_img.requires_grad = True
-            real_img_aug = real_img
-
-            real_pred = discriminator(real_img_aug)
-            r1_loss = d_r1_loss(real_pred, real_img)
-
-            discriminator.zero_grad()
-            (args.r1 / 2 * r1_loss * args.d_reg_every + 0 * real_pred[0]).backward()
-
-            d_optim.step()
-
-        loss_dict["r1"] = r1_loss
-
         requires_grad(generator, True)
         requires_grad(discriminator, False)
 
-        noise = mixing_noise(args.batch, args.latent, args.mixing, device)
-        fake_img, _ = generator(noise)
+        noise = torch.randn(args.batch, args.latent, device=device)
+        fake_img, _ = generator(noise, text_embeds)
 
-        fake_pred = discriminator(fake_img)
+        fake_pred = discriminator(fake_img, text_embeds)
         g_loss = g_nonsaturating_loss(fake_pred)
 
         loss_dict["g"] = g_loss
@@ -175,8 +171,9 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         if g_regularize:
             path_batch_size = max(1, args.batch // args.path_batch_shrink)
-            noise = mixing_noise(path_batch_size, args.latent, args.mixing, device)
-            fake_img, latents = generator(noise, return_latents=True)
+            noise = torch.randn(args.batch, args.latent, device=device)
+            images, latents = generator(noise, text_embeds, return_latents=True)
+            fake_img = images[-1]
 
             path_loss, mean_path_length, path_lengths = g_path_regularize(
                 fake_img, latents, mean_path_length
@@ -203,7 +200,6 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         d_loss_val = loss_reduced["d"].mean().item()
         g_loss_val = loss_reduced["g"].mean().item()
-        r1_val = loss_reduced["r1"].mean().item()
         path_loss_val = loss_reduced["path"].mean().item()
         real_score_val = loss_reduced["real_score"].mean().item()
         fake_score_val = loss_reduced["fake_score"].mean().item()
@@ -211,7 +207,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         pbar.set_description(
             (
-                f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; "
+                f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; "
                 f"path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}; "
                 f"augment: {ada_aug_p:.4f}"
             )
@@ -245,12 +241,10 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
 
 if __name__ == "__main__":
-    device = "cuda"
+    parser = argparse.ArgumentParser(description="GigaGAN trainer")
 
-    parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
-
-    parser.add_argument("path", type=str, help="path to the lmdb dataset")
-    parser.add_argument('--arch', type=str, default='stylegan2', help='model architectures (stylegan2 | swagan)')
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--path", type=str, default="lambdalabs/pokemon-blip-captions")
     parser.add_argument(
         "--iter", type=int, default=800000, help="total training iterations"
     )
@@ -264,7 +258,7 @@ if __name__ == "__main__":
         help="number of the samples generated during training",
     )
     parser.add_argument(
-        "--size", type=int, default=256, help="image sizes for the model"
+        "--size", type=int, default=64, help="image sizes for the model"
     )
     parser.add_argument(
         "--r1", type=float, default=10, help="weight of the r1 regularization"
@@ -336,21 +330,23 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    n_gpu = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
-
-    args.latent = 512
+    args.latent = 256
     args.n_mlp = 8
-
     args.start_iter = 0
+    args.tin_dim = 512
+    args.tout_dim = 256
 
+    device = args.device
     generator = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+        args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
+        channel_multiplier=args.channel_multiplier,
     ).to(device)
     discriminator = Discriminator(
-        args.size, channel_multiplier=args.channel_multiplier
+        args.size, args.tin_dim, args.tout_dim, channel_multiplier=args.channel_multiplier,
     ).to(device)
     g_ema = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+        args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
+        channel_multiplier=args.channel_multiplier,
     ).to(device)
     g_ema.eval()
     accumulate(g_ema, generator, 0)
@@ -388,12 +384,16 @@ if __name__ == "__main__":
         g_optim.load_state_dict(ckpt["g_optim"])
         d_optim.load_state_dict(ckpt["d_optim"])
 
-    transform = transforms.Compose(
-        [
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
-        ]
-    )
+    to_tensor = transforms.Compose([
+        transforms.Resize(args.size),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
+    ])
+    def preprocess(data):
+        data['image'][0] = to_tensor(data['image'][0]).to(device)
+        return data
+    dataset = load_dataset('lambdalabs/pokemon-blip-captions', split="train", cache_dir='.')
+    dataset = dataset.with_transform(preprocess)
+    dataloader = DataLoader(dataset, batch_size=args.batch)
 
-    train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, device)
+    train(args, dataloader, generator, discriminator, g_optim, d_optim, g_ema, device)
