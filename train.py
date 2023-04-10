@@ -121,6 +121,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
 
     sample_z = torch.randn(args.batch, args.latent, device=device)
     image_text = next(loader)
+    print(image_text['text'])
     sample_t = text_encoder(image_text['text'])
 
     for idx in pbar:
