@@ -119,7 +119,9 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
     ada_aug_p = args.augment_p if args.augment_p > 0 else 0.0
     r_t_stat = 0
 
-    sample_z = torch.randn(args.n_sample, args.latent, device=device)
+    sample_z = torch.randn(args.batch, args.latent, device=device)
+    image_text = next(loader)
+    sample_t = text_encoder(image_text['text'])
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -135,7 +137,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         requires_grad(generator, False)
         requires_grad(discriminator, True)
 
-        noise = torch.randn(args.batch, args.latent, device=device)
+        noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img, _ = generator(noise, text_embeds)
         real_img_aug = real_img
 
@@ -154,7 +156,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         requires_grad(generator, True)
         requires_grad(discriminator, False)
 
-        noise = torch.randn(args.batch, args.latent, device=device)
+        noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img, _ = generator(noise, text_embeds)
 
         fake_pred = discriminator(fake_img, text_embeds)
@@ -170,7 +172,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
 
         if g_regularize:
             path_batch_size = max(1, args.batch // args.path_batch_shrink)
-            noise = torch.randn(args.batch, args.latent, device=device)
+            noise = mixing_noise(args.batch, args.latent, args.mixing, device)
             images, latents = generator(noise, text_embeds, return_latents=True)
             fake_img = images[-1]
 
@@ -215,13 +217,10 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         if i % 100 == 0:
             with torch.no_grad():
                 g_ema.eval()
-                sample, _ = g_ema([sample_z])
+                sample, _ = g_ema([sample_z], sample_t)
                 utils.save_image(
-                    sample,
-                    f"sample/{str(i).zfill(6)}.png",
-                    nrow=int(args.n_sample ** 0.5),
-                    normalize=True,
-                    range=(-1, 1),
+                    sample[-1], f"sample/{str(i).zfill(6)}.png",
+                    ncol=int(math.sqrt(args.batch))+1, normalize=True, range=(-1, 1),
                 )
 
         if i % 10000 == 0:

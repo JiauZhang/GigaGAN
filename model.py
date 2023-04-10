@@ -202,7 +202,7 @@ class Generator(nn.Module):
         t_local, t_global = torch.split(text_embeds, [seq_len-1, 1], dim=1)
         # batch, tout_dim
         t_global = t_global.squeeze(dim=1)
-        styles = [torch.cat([styles, t_global], dim=1)]
+        styles = [torch.cat([style_, t_global], dim=1) for style_ in styles]
 
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
