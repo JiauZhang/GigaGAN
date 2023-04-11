@@ -119,10 +119,11 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
     ada_aug_p = args.augment_p if args.augment_p > 0 else 0.0
     r_t_stat = 0
 
-    sample_z = torch.randn(args.batch, args.latent, device=device)
-    image_text = next(loader)
-    print(image_text['text'])
-    sample_t = text_encoder(image_text['text'])
+    sample_z = torch.randn(args.n_sample, args.latent, device=device)
+    text = next(loader)['text'][:1]
+    print(text)
+    sample_t = text_encoder(text)
+    sample_t = sample_t.repeat(args.n_sample, 1, 1).detach()
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -132,6 +133,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
             break
 
         image_text = next(loader)
+        # [4x, 8x, ..., 64x]
         real_img = multi_scale(image_text['image'])
         text_embeds = text_encoder(image_text['text'])
 
@@ -139,9 +141,11 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         requires_grad(discriminator, True)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
+        # fake_img: [4x, 8x, ..., 64x] or [64x]
         fake_img, _ = generator(noise, text_embeds)
         real_img_aug = real_img
 
+        # [batch, 10]
         fake_pred = discriminator(fake_img, text_embeds)
         real_pred = discriminator(real_img_aug, text_embeds)
         d_loss = d_logistic_loss(real_pred, fake_pred)
@@ -153,6 +157,17 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         discriminator.zero_grad()
         d_loss.backward()
         d_optim.step()
+
+        d_regularize = i % args.d_reg_every == 0
+        if d_regularize:
+            real_img[-1].requires_grad = True
+            real_img_aug = real_img
+            real_pred = discriminator(real_img_aug)
+            r1_loss = d_r1_loss(real_pred[:, -2:], real_img[-1])
+            discriminator.zero_grad()
+            (args.r1 / 2 * r1_loss * args.d_reg_every + 0 * real_pred[0, -2:]).backward()
+            d_optim.step()
+        loss_dict["r1"] = r1_loss
 
         requires_grad(generator, True)
         requires_grad(discriminator, False)
@@ -173,7 +188,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
 
         if g_regularize:
             path_batch_size = max(1, args.batch // args.path_batch_shrink)
-            noise = mixing_noise(args.batch, args.latent, args.mixing, device)
+            noise = mixing_noise(path_batch_size, args.latent, args.mixing, device)
             images, latents = generator(noise, text_embeds, return_latents=True)
             fake_img = images[-1]
 
@@ -202,6 +217,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
 
         d_loss_val = loss_reduced["d"].mean().item()
         g_loss_val = loss_reduced["g"].mean().item()
+        r1_val = loss_reduced["r1"].mean().item()
         path_loss_val = loss_reduced["path"].mean().item()
         real_score_val = loss_reduced["real_score"].mean().item()
         fake_score_val = loss_reduced["fake_score"].mean().item()
@@ -209,7 +225,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
 
         pbar.set_description(
             (
-                f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; "
+                f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; "
                 f"path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}; "
                 f"augment: {ada_aug_p:.4f}"
             )
@@ -221,7 +237,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
                 sample, _ = g_ema([sample_z], sample_t)
                 utils.save_image(
                     sample[-1], f"sample/{str(i).zfill(6)}.png",
-                    ncol=int(math.sqrt(args.batch))+1, normalize=True, range=(-1, 1),
+                    nrow=int(math.sqrt(args.n_sample)), normalize=True, value_range=(-1, 1),
                 )
 
         if i % 10000 == 0:

@@ -263,6 +263,7 @@ class Generator(nn.Module):
 
             i += 2
 
+        # images: [4x, 8x, ..., 32x, 64x] or [64x]
         if not return_images:
             images = [skip]
 
@@ -432,6 +433,7 @@ class Discriminator(nn.Module):
         for out, predictor in zip(outputs, self.predictors):
             preds.append(predictor(out, text_embeds).view(batch, -1))
 
+        # [batch, 10]
         out = torch.cat(preds, dim=1)
         return out
 
