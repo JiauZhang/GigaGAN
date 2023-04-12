@@ -87,15 +87,19 @@ def append_if(condition, var, elem):
 
 class Generator(nn.Module):
     def __init__(
-        self, size, style_dim, n_mlp, tin_dim, tout_dim,
+        self, size, style_dim, n_mlp, tin_dim=0, tout_dim=0,
         channel_multiplier=2, blur_kernel=[1, 3, 3, 1], lr_mlp=0.01,
+        use_self_attn=False, use_cross_attn=False,
     ):
         super().__init__()
 
         self.size = size
         style_dim = style_dim + tout_dim
         self.style_dim = style_dim
-        self.text_encoder = TextEncoder(tin_dim, tout_dim)
+        self.use_self_attn = use_self_attn
+        self.use_cross_attn = use_cross_attn
+        if use_cross_attn:
+            self.text_encoder = TextEncoder(tin_dim, tout_dim)
 
         layers = [PixelNorm()]
         for i in range(n_mlp):
@@ -161,8 +165,12 @@ class Generator(nn.Module):
                 )
             )
 
-            self.attns.append(SelfAttention(out_channel, style_dim))
-            self.attns.append(CrossAttention(out_channel, tout_dim))
+            self.attns.append(
+                SelfAttention(out_channel, style_dim) if use_self_attn else None
+            )
+            self.attns.append(
+                CrossAttention(out_channel, tout_dim) if use_cross_attn else None
+            )
 
             self.to_rgbs.append(ToRGB(out_channel, style_dim))
 
@@ -193,16 +201,17 @@ class Generator(nn.Module):
         return self.style(input)
 
     def forward(
-        self, styles, text_embeds,
+        self, styles, text_embeds=None,
         return_latents=False, inject_index=None, truncation=1, truncation_latent=None,
-        input_is_latent=False, noise=None, randomize_noise=True, return_images=True,
+        input_is_latent=False, noise=None, randomize_noise=True, return_images=False,
     ):
-        seq_len = text_embeds.shape[1]
-        text_embeds = self.text_encoder(text_embeds)
-        t_local, t_global = torch.split(text_embeds, [seq_len-1, 1], dim=1)
-        # batch, tout_dim
-        t_global = t_global.squeeze(dim=1)
-        styles = [torch.cat([style_, t_global], dim=1) for style_ in styles]
+        if self.use_cross_attn:
+            seq_len = text_embeds.shape[1]
+            text_embeds = self.text_encoder(text_embeds)
+            t_local, t_global = torch.split(text_embeds, [seq_len-1, 1], dim=1)
+            # batch, tout_dim
+            t_global = t_global.squeeze(dim=1)
+            styles = [torch.cat([style_, t_global], dim=1) for style_ in styles]
 
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
@@ -256,8 +265,8 @@ class Generator(nn.Module):
         ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            out = self_attn(out, latent[:, i + 1])
-            out = cross_attn(out, t_local)
+            out = self_attn(out, latent[:, i + 1]) if self_attn else out
+            out = cross_attn(out, t_local) if cross_attn else out
             skip = to_rgb(out, latent[:, i + 2], skip)
             append_if(return_images, images, skip)
 
