@@ -89,13 +89,14 @@ class Generator(nn.Module):
     def __init__(
         self, size, style_dim, n_mlp, tin_dim=0, tout_dim=0,
         channel_multiplier=2, blur_kernel=[1, 3, 3, 1], lr_mlp=0.01,
-        use_self_attn=False, use_cross_attn=False,
+        use_self_attn=False, use_cross_attn=False, use_multi_scale=False,
     ):
         super().__init__()
 
         self.size = size
         style_dim = style_dim + tout_dim
         self.style_dim = style_dim
+        self.use_multi_scale = use_multi_scale
         self.use_self_attn = use_self_attn
         self.use_cross_attn = use_cross_attn
         if use_cross_attn:
@@ -203,7 +204,7 @@ class Generator(nn.Module):
     def forward(
         self, styles, text_embeds=None,
         return_latents=False, inject_index=None, truncation=1, truncation_latent=None,
-        input_is_latent=False, noise=None, randomize_noise=True, return_images=False,
+        input_is_latent=False, noise=None, randomize_noise=True,
     ):
         if self.use_cross_attn:
             seq_len = text_embeds.shape[1]
@@ -256,7 +257,7 @@ class Generator(nn.Module):
         out = self.input(latent)
         out = self.conv1(out, latent[:, 0], noise=noise[0])
         skip = self.to_rgb1(out, latent[:, 1])
-        append_if(return_images, images, skip)
+        append_if(self.use_multi_scale, images, skip)
 
         i = 1
         for conv1, conv2, noise1, noise2, to_rgb, self_attn, cross_attn in zip(
@@ -268,12 +269,12 @@ class Generator(nn.Module):
             out = self_attn(out, latent[:, i + 1]) if self_attn else out
             out = cross_attn(out, t_local) if cross_attn else out
             skip = to_rgb(out, latent[:, i + 2], skip)
-            append_if(return_images, images, skip)
+            append_if(self.use_multi_scale, images, skip)
 
             i += 2
 
         # images: [4x, 8x, ..., 32x, 64x] or [64x]
-        if not return_images:
+        if not self.use_multi_scale:
             images = [skip]
 
         if return_latents:
@@ -385,7 +386,9 @@ class Predictor(nn.Module):
         return out
 
 class Discriminator(nn.Module):
-    def __init__(self, size, tin_dim, tout_dim, channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
+    def __init__(self, size, tin_dim, tout_dim, channel_multiplier=2, blur_kernel=[1, 3, 3, 1],
+        use_multi_scale=False,
+    ):
         super().__init__()
 
         channels = {
@@ -400,6 +403,7 @@ class Discriminator(nn.Module):
             1024: 16 * channel_multiplier,
         }
 
+        self.use_multi_scale = use_multi_scale
         self.heads = nn.ModuleList([ConvLayer(3, channels[size], 1)])
         self.convs = nn.ModuleList()
         self.attns = nn.ModuleList()
