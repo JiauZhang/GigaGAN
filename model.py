@@ -406,7 +406,7 @@ class Discriminator(nn.Module):
         self.use_multi_scale = use_multi_scale
         self.use_self_attn = use_self_attn
         self.heads = nn.ModuleList()
-        self.convs = nn.ModuleList()
+        self.convs = nn.ModuleList([ConvLayer(3, channels[size], 1)])
         self.attns = nn.ModuleList()
         self.predictors = nn.ModuleList()
         log_size = int(math.log(size, 2))
@@ -443,7 +443,7 @@ class Discriminator(nn.Module):
                 input_heads.append(self.heads[i](input))
 
         outputs, i = [], 0
-        out = inputs
+        out = inputs[-1]
         for conv, attn in zip(self.convs, self.attns):
             out = conv(out)
             out = attn(out) if attn else out

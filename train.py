@@ -133,9 +133,13 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
             break
 
         image_text = next(loader)
-        # [4x, 8x, ..., 64x]
-        real_img = multi_scale(image_text['image'])
-        text_embeds = text_encoder(image_text['text'])
+        if args.use_multi_scale:
+            # [4x, 8x, ..., 64x]
+            real_img = multi_scale(image_text['image'])
+            text_embeds = text_encoder(image_text['text'])
+        else:
+            real_img = [image_text['image']]
+            text_embeds = None
 
         requires_grad(generator, False)
         requires_grad(discriminator, True)
@@ -161,11 +165,10 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         d_regularize = i % args.d_reg_every == 0
         if d_regularize:
             real_img[-1].requires_grad = True
-            real_img_aug = real_img
-            real_pred = discriminator(real_img_aug)
-            r1_loss = d_r1_loss(real_pred[:, -2:], real_img[-1])
+            real_pred = discriminator(real_img)
+            r1_loss = d_r1_loss(real_pred, real_img[-1])
             discriminator.zero_grad()
-            (args.r1 / 2 * r1_loss * args.d_reg_every + 0 * real_pred[0, -2:]).backward()
+            (args.r1 / 2 * r1_loss * args.d_reg_every + 0 * real_pred[0]).backward()
             d_optim.step()
         loss_dict["r1"] = r1_loss
 
@@ -350,18 +353,20 @@ if __name__ == "__main__":
     args.start_iter = 0
     args.tin_dim = 512
     args.tout_dim = 256
+    args.use_multi_scale = False
 
     device = args.device
     generator = Generator(
         args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
-        channel_multiplier=args.channel_multiplier,
+        channel_multiplier=args.channel_multiplier, use_multi_scale=args.use_multi_scale,
     ).to(device)
     discriminator = Discriminator(
         args.size, args.tin_dim, args.tout_dim, channel_multiplier=args.channel_multiplier,
+        use_multi_scale=args.use_multi_scale,
     ).to(device)
     g_ema = Generator(
         args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
-        channel_multiplier=args.channel_multiplier,
+        channel_multiplier=args.channel_multiplier, use_multi_scale=args.use_multi_scale,
     ).to(device)
     g_ema.eval()
     accumulate(g_ema, generator, 0)
