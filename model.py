@@ -386,8 +386,8 @@ class Predictor(nn.Module):
         return out
 
 class Discriminator(nn.Module):
-    def __init__(self, size, tin_dim, tout_dim, channel_multiplier=2, blur_kernel=[1, 3, 3, 1],
-        use_multi_scale=False,
+    def __init__(self, size, tin_dim=0, tout_dim=0, channel_multiplier=2,
+        blur_kernel=[1, 3, 3, 1], use_multi_scale=False, use_self_attn=False,
     ):
         super().__init__()
 
@@ -404,7 +404,8 @@ class Discriminator(nn.Module):
         }
 
         self.use_multi_scale = use_multi_scale
-        self.heads = nn.ModuleList([ConvLayer(3, channels[size], 1)])
+        self.use_self_attn = use_self_attn
+        self.heads = nn.ModuleList()
         self.convs = nn.ModuleList()
         self.attns = nn.ModuleList()
         self.predictors = nn.ModuleList()
@@ -414,39 +415,52 @@ class Discriminator(nn.Module):
         for i in range(log_size, 2, -1):
             out_channel = channels[2 ** (i - 1)]
             self.convs.append(ResBlock(in_channel, out_channel, blur_kernel))
-            self.attns.append(SelfAttention(out_channel))
-            self.heads.append(ConvLayer(3, in_channel, 1))
+            self.attns.append(SelfAttention(out_channel) if use_multi_scale else None)
+            self.heads.append(ConvLayer(3, in_channel, 1) if use_multi_scale else None)
             in_channel = out_channel
-            self.predictors.append(Predictor(in_channel, tout_dim))
-        self.text_encoder = TextEncoder(tin_dim, tout_dim)
+            self.predictors.append(Predictor(in_channel, tout_dim) if use_multi_scale else None)
+        self.text_encoder = TextEncoder(tin_dim, tout_dim) if use_multi_scale else None
 
-    def forward(self, inputs, text_embeds):
-        batch = text_embeds.shape[0]
-        # [n, seq_len, tin_dim] --> [n, tout_dim]
-        text_embeds = self.text_encoder(text_embeds)[:, -1]
-        # inputs: 4x --> 8x --> ... --> 64x
-        in_len = len(inputs)
-        # 64x --> 32x --> ... --> 4x
-        input_heads = []
-        for i in range(len(inputs)):
-            input = inputs[in_len-i-1]
-            input_heads.append(self.heads[i](input))
+        self.stddev_group = 4
+        self.stddev_feat = 1
+        self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
+        self.final_linear = nn.Sequential(
+            EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
+            EqualLinear(channels[4], 1),
+        )
+
+    def forward(self, inputs, text_embeds=None):
+        if self.use_multi_scale:
+            batch = text_embeds.shape[0]
+            # [n, seq_len, tin_dim] --> [n, tout_dim]
+            text_embeds = self.text_encoder(text_embeds)[:, -1]
+            # inputs: 4x --> 8x --> ... --> 64x
+            in_len = len(inputs)
+            # 64x --> 32x --> ... --> 4x
+            input_heads = []
+            for i in range(len(inputs)):
+                input = inputs[in_len-i-1]
+                input_heads.append(self.heads[i](input))
 
         outputs, i = [], 0
+        out = inputs
         for conv, attn in zip(self.convs, self.attns):
-            input = input_heads[i]
-            if len(outputs):
-                input = torch.cat([input, outputs[-1]], dim=0)
-            out = conv(input)
-            out = attn(out)
-            outputs.append(out)
+            out = conv(out)
+            out = attn(out) if attn else out
             i += 1
 
-        preds = []
-        for out, predictor in zip(outputs, self.predictors):
-            preds.append(predictor(out, text_embeds).view(batch, -1))
+        batch, channel, height, width = out.shape
+        group = min(batch, self.stddev_group)
+        stddev = out.view(
+            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
+        )
+        stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
+        stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
+        stddev = stddev.repeat(group, 1, height, width)
+        out = torch.cat([out, stddev], 1)
+        out = self.final_conv(out)
+        out = out.view(batch, -1)
+        out = self.final_linear(out)
 
-        # [batch, 10]
-        out = torch.cat(preds, dim=1)
         return out
 
