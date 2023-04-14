@@ -407,7 +407,7 @@ class Discriminator(nn.Module):
         self.use_self_attn = use_self_attn
         self.heads = nn.ModuleList()
         self.convs = nn.ModuleList([ConvLayer(3, channels[size], 1)])
-        self.attns = nn.ModuleList()
+        self.attns = nn.ModuleList([None])
         self.predictors = nn.ModuleList()
         log_size = int(math.log(size, 2))
 

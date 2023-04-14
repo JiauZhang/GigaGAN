@@ -314,7 +314,8 @@ class ModulatedConv2d(nn.Module):
         self.scale = 1 / math.sqrt(fan_in)
         self.padding = kernel_size // 2
         # conv weight shape: out_ch, in_ch, k_h, k_w
-        self.weight = nn.Parameter(torch.empty((n_kernel, out_channel, in_channel, kernel_size, kernel_size)))
+        self.weight = nn.Parameter(torch.randn((n_kernel, out_channel, in_channel, kernel_size, kernel_size)))
+        nn.init.kaiming_normal_(self.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
         if self.n_kernel != 1:
             self.affine = nn.Linear(style_dim, n_kernel)
         self.modulation = EqualLinear(style_dim, in_channel, bias_init=1)

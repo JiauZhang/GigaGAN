@@ -348,11 +348,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    args.latent = 256
+    args.latent = 512
     args.n_mlp = 8
     args.start_iter = 0
-    args.tin_dim = 512
-    args.tout_dim = 256
+    args.tin_dim = 0
+    args.tout_dim = 0
     args.use_multi_scale = False
 
     device = args.device
