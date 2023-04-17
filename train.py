@@ -122,8 +122,11 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
     sample_z = torch.randn(args.n_sample, args.latent, device=device)
     text = next(loader)['text'][:1]
     print(text)
-    sample_t = text_encoder(text)
-    sample_t = sample_t.repeat(args.n_sample, 1, 1).detach()
+    if args.use_text_cond:
+        sample_t = text_encoder(text)
+        sample_t = sample_t.repeat(args.n_sample, 1, 1).detach()
+    else:
+        sample_t = None
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -133,13 +136,9 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
             break
 
         image_text = next(loader)
-        if args.use_multi_scale:
-            # [4x, 8x, ..., 64x]
-            real_img = multi_scale(image_text['image'])
-            text_embeds = text_encoder(image_text['text'])
-        else:
-            real_img = [image_text['image']]
-            text_embeds = None
+        # [4x, 8x, ..., 64x] or [64x]
+        real_img = multi_scale(image_text['image']) if args.use_multi_scale else [image_text['image']]
+        text_embeds = text_encoder(image_text['text']) if args.use_text_cond else None
 
         requires_grad(generator, False)
         requires_grad(discriminator, True)
@@ -354,11 +353,13 @@ if __name__ == "__main__":
     args.tin_dim = 0
     args.tout_dim = 0
     args.use_multi_scale = False
+    args.use_text_cond = False
 
     device = args.device
     generator = Generator(
         args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
         channel_multiplier=args.channel_multiplier, use_multi_scale=args.use_multi_scale,
+        use_text_cond=args.use_text_cond,
     ).to(device)
     discriminator = Discriminator(
         args.size, args.tin_dim, args.tout_dim, channel_multiplier=args.channel_multiplier,
@@ -367,6 +368,7 @@ if __name__ == "__main__":
     g_ema = Generator(
         args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
         channel_multiplier=args.channel_multiplier, use_multi_scale=args.use_multi_scale,
+        use_text_cond=args.use_text_cond,
     ).to(device)
     g_ema.eval()
     accumulate(g_ema, generator, 0)
@@ -415,6 +417,6 @@ if __name__ == "__main__":
     dataset = load_dataset('lambdalabs/pokemon-blip-captions', split="train", cache_dir='.')
     dataset = dataset.with_transform(preprocess)
     dataloader = DataLoader(dataset, batch_size=args.batch, shuffle=True, drop_last=True)
-    text_encoder = CLIPText(args.device)
+    text_encoder = CLIPText(args.device) if args.use_text_cond else None
 
     train(args, dataloader, generator, discriminator, text_encoder, g_optim, d_optim, g_ema, device)
