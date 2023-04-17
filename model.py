@@ -87,26 +87,27 @@ def append_if(condition, var, elem):
 
 class Generator(nn.Module):
     def __init__(
-        self, size, style_dim, n_mlp, tin_dim=0, tout_dim=0,
+        self, size, z_dim, n_mlp, tin_dim=0, tout_dim=0,
         channel_multiplier=2, blur_kernel=[1, 3, 3, 1], lr_mlp=0.01,
-        use_self_attn=False, use_cross_attn=False, use_multi_scale=False,
+        use_self_attn=False, use_text_cond=False, use_multi_scale=False,
     ):
         super().__init__()
 
         self.size = size
-        style_dim = style_dim + tout_dim
-        self.style_dim = style_dim
         self.use_multi_scale = use_multi_scale
         self.use_self_attn = use_self_attn
-        self.use_cross_attn = use_cross_attn
-        if use_cross_attn:
+        self.use_text_cond = use_text_cond
+        if use_text_cond:
+            self.style_dim = z_dim + tout_dim
             self.text_encoder = TextEncoder(tin_dim, tout_dim)
+        else:
+            self.style_dim = z_dim
 
         layers = [PixelNorm()]
         for i in range(n_mlp):
             layers.append(
                 EqualLinear(
-                    style_dim, style_dim, lr_mul=lr_mlp, activation="fused_lrelu"
+                    self.style_dim, self.style_dim, lr_mul=lr_mlp, activation="fused_lrelu"
                 )
             )
 
@@ -126,9 +127,9 @@ class Generator(nn.Module):
 
         self.input = ConstantInput(self.channels[4])
         self.conv1 = StyledConv(
-            self.channels[4], self.channels[4], 3, style_dim, blur_kernel=blur_kernel
+            self.channels[4], self.channels[4], 3, self.style_dim, blur_kernel=blur_kernel
         )
-        self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
+        self.to_rgb1 = ToRGB(self.channels[4], self.style_dim, upsample=False)
 
         self.log_size = int(math.log(size, 2))
         self.num_layers = (self.log_size - 2) * 2 + 1
@@ -149,31 +150,22 @@ class Generator(nn.Module):
         for i in range(3, self.log_size + 1):
             out_channel = self.channels[2 ** i]
 
-            self.convs.append(
-                StyledConv(
-                    in_channel,
-                    out_channel,
-                    3,
-                    style_dim,
-                    upsample=True,
-                    blur_kernel=blur_kernel,
-                )
-            )
-
-            self.convs.append(
-                StyledConv(
-                    out_channel, out_channel, 3, style_dim, blur_kernel=blur_kernel
-                )
-            )
+            self.convs.append(StyledConv(
+                in_channel, out_channel, 3, self.style_dim, upsample=True,
+                blur_kernel=blur_kernel,
+            ))
+            self.convs.append(StyledConv(
+                out_channel, out_channel, 3, self.style_dim, blur_kernel=blur_kernel
+            ))
 
             self.attns.append(
-                SelfAttention(out_channel, style_dim) if use_self_attn else None
+                SelfAttention(out_channel, self.style_dim) if use_self_attn else None
             )
             self.attns.append(
-                CrossAttention(out_channel, tout_dim) if use_cross_attn else None
+                CrossAttention(out_channel, tout_dim) if use_text_cond else None
             )
 
-            self.to_rgbs.append(ToRGB(out_channel, style_dim))
+            self.to_rgbs.append(ToRGB(out_channel, self.style_dim))
 
             in_channel = out_channel
 
@@ -206,7 +198,7 @@ class Generator(nn.Module):
         return_latents=False, inject_index=None, truncation=1, truncation_latent=None,
         input_is_latent=False, noise=None, randomize_noise=True,
     ):
-        if self.use_cross_attn:
+        if self.use_text_cond:
             seq_len = text_embeds.shape[1]
             text_embeds = self.text_encoder(text_embeds)
             t_local, t_global = torch.split(text_embeds, [seq_len-1, 1], dim=1)
@@ -388,6 +380,7 @@ class Predictor(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self, size, tin_dim=0, tout_dim=0, channel_multiplier=2,
         blur_kernel=[1, 3, 3, 1], use_multi_scale=False, use_self_attn=False,
+        use_text_cond=False,
     ):
         super().__init__()
 
@@ -405,6 +398,7 @@ class Discriminator(nn.Module):
 
         self.use_multi_scale = use_multi_scale
         self.use_self_attn = use_self_attn
+        self.use_text_cond = use_text_cond
         self.heads = nn.ModuleList()
         self.convs = nn.ModuleList([ConvLayer(3, channels[size], 1)])
         self.attns = nn.ModuleList([None])
@@ -419,7 +413,7 @@ class Discriminator(nn.Module):
             self.heads.append(ConvLayer(3, in_channel, 1) if use_multi_scale else None)
             in_channel = out_channel
             self.predictors.append(Predictor(in_channel, tout_dim) if use_multi_scale else None)
-        self.text_encoder = TextEncoder(tin_dim, tout_dim) if use_multi_scale else None
+        self.text_encoder = TextEncoder(tin_dim, tout_dim) if use_text_cond else None
 
         self.stddev_group = 4
         self.stddev_feat = 1
@@ -430,7 +424,7 @@ class Discriminator(nn.Module):
         )
 
     def forward(self, inputs, text_embeds=None):
-        if self.use_multi_scale:
+        if self.use_text_cond:
             batch = text_embeds.shape[0]
             # [n, seq_len, tin_dim] --> [n, tout_dim]
             text_embeds = self.text_encoder(text_embeds)[:, -1]
