@@ -282,7 +282,7 @@ class EqualLinear(nn.Module):
 class ModulatedConv2d(nn.Module):
     def __init__(
         self, in_channel, out_channel, kernel_size, style_dim, n_kernel=1, demodulate=True,
-        upsample=False, downsample=False, blur_kernel=[1, 3, 3, 1], fused=True,
+        upsample=False, downsample=False, blur_kernel=[1, 3, 3, 1],
     ):
         super().__init__()
 
@@ -319,7 +319,6 @@ class ModulatedConv2d(nn.Module):
             self.affine = nn.Linear(style_dim, n_kernel)
         self.modulation = EqualLinear(style_dim, in_channel, bias_init=1)
         self.demodulate = demodulate
-        self.fused = fused
 
     def __repr__(self):
         return (
@@ -335,35 +334,6 @@ class ModulatedConv2d(nn.Module):
             ada_weight = (selection * self.weight).sum(dim=1)
         else:
             ada_weight = self.weight
-
-        if not self.fused:
-            weight = self.scale * ada_weight.squeeze(0)
-            style = self.modulation(style)
-
-            if self.demodulate:
-                w = weight.unsqueeze(0) * style.view(batch, 1, in_channel, 1, 1)
-                dcoefs = (w.square().sum((2, 3, 4)) + 1e-8).rsqrt()
-
-            input = input * style.reshape(batch, in_channel, 1, 1)
-
-            if self.upsample:
-                weight = weight.transpose(0, 1)
-                out = conv2d_gradfix.conv_transpose2d(
-                    input, weight, padding=0, stride=2
-                )
-                out = self.blur(out)
-
-            elif self.downsample:
-                input = self.blur(input)
-                out = conv2d_gradfix.conv2d(input, weight, padding=0, stride=2)
-
-            else:
-                out = conv2d_gradfix.conv2d(input, weight, padding=self.padding)
-
-            if self.demodulate:
-                out = out * dcoefs.view(batch, -1, 1, 1)
-
-            return out
 
         style = self.modulation(style).view(batch, 1, in_channel, 1, 1)
         weight = self.scale * ada_weight * style
