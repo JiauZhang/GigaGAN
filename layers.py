@@ -181,36 +181,44 @@ class TextEncoder(nn.Module):
         return output
 
 class CrossAttention(nn.Module):
-    def __init__(self, in_channels, embed_dim, num_heads=8, bias=False):
+    def __init__(self, in_channels, text_dim, embed_dim=16, num_heads=1, skip=True, bias=False):
         super().__init__()
 
         self.in_channels = in_channels
-        self.to_q = nn.Linear(in_channels, in_channels, bias=bias)
-        self.to_k = nn.Linear(embed_dim, in_channels, bias=bias)
-        self.to_v = nn.Linear(embed_dim, in_channels, bias=bias)
-        self.mha = nn.MultiheadAttention(in_channels, num_heads, batch_first=True)
+        self.embed_dim = embed_dim
+        self.skip = skip
+        self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
+        self.to_q = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.to_k = nn.Linear(text_dim, embed_dim, bias=bias)
+        self.to_v = nn.Linear(text_dim, embed_dim, bias=bias)
+        self.mha = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
         self.ff = nn.Sequential(
             nn.GELU(),
-            nn.Linear(in_channels, in_channels),
+            nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
-            nn.Linear(in_channels, in_channels),
+            nn.Linear(embed_dim, embed_dim),
         )
-        self.ln1 = nn.LayerNorm(in_channels)
-        self.ln2 = nn.LayerNorm(in_channels)
+        self.ln1 = nn.LayerNorm(embed_dim)
+        self.ln2 = nn.LayerNorm(embed_dim)
+        self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
 
     def forward(self, image_embeds, text_embeds):
-        batch, c, h, w = image_embeds.shape
+        ie = self.to_input(image_embeds)
+        batch, c, h, w = ie.shape
         # image_embeds: [N, C, H, W] --> [N, H, W, C] --> [N, HW, C]
-        image_embeds = image_embeds.permute(0, 2, 3, 1).reshape(batch, h*w, c)
-        query = self.to_q(image_embeds)
+        ie = ie.permute(0, 2, 3, 1).reshape(batch, h*w, c)
+        query = self.to_q(ie)
         key = self.to_k(text_embeds)
         value = self.to_v(text_embeds)
         attn_output, attn_output_weights = self.mha(query, key, value)
-        out1 = self.ln1(attn_output + image_embeds)
+        out1 = self.ln1(attn_output + ie)
         out2 = self.ff(out1)
         # [N, HW, C]
         output = self.ln2(out2 + out1)
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
+        output = self.to_output(output)
+        if self.skip:
+            output += image_embeds
         return output
 
 class EqualConv2d(nn.Module):
