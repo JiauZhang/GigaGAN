@@ -114,32 +114,36 @@ class L2MultiheadAttention(nn.Module):
         return self.out_proj(PXAV)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channels, style_dim=None, num_heads=8):
+    def __init__(self, in_channels, style_dim=None, embed_dim=16, num_heads=1, skip=True):
         super().__init__()
-        if style_dim is not None:
-            self.embedding = nn.Linear(style_dim, in_channels)
-        self.in_channels = in_channels
-        self.l2attn = L2MultiheadAttention(in_channels, num_heads)
+        self.skip = skip
+        self.use_style = style_dim is not None
+        if self.use_style:
+            self.embed_style = nn.Linear(style_dim, embed_dim)
+        self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
+        self.l2attn = L2MultiheadAttention(embed_dim, num_heads)
         self.ff = nn.Sequential(
             nn.GELU(),
-            nn.Linear(in_channels, in_channels),
+            nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
-            nn.Linear(in_channels, in_channels),
+            nn.Linear(embed_dim, embed_dim),
         )
-        self.ln1 = nn.LayerNorm(in_channels)
-        self.ln2 = nn.LayerNorm(in_channels)
+        self.ln1 = nn.LayerNorm(embed_dim)
+        self.ln2 = nn.LayerNorm(embed_dim)
+        self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
 
     def forward(self, input, style=None):
-        batch, c, h, w = input.shape
+        attn_input = self.to_input(input)
+        batch, c, h, w = attn_input.shape
         # input: [N, C, H, W] --> [N, H, W, C] --> [N, HWC]
-        input = input.permute(0, 2, 3, 1).reshape(batch, h*w*c)
-        if style is not None:
+        attn_input = attn_input.permute(0, 2, 3, 1).reshape(batch, h*w*c)
+        if self.use_style:
             # style: [N, style_dim] --> [N, C]
-            style_embed = self.embedding(style)
+            style_embed = self.embed_style(style)
             # [N, HWC+C] --> [N, HW+1, C]
-            input_style = torch.cat([input, style_embed], dim=-1).reshape(batch, h*w+1, c)
+            input_style = torch.cat([attn_input, style_embed], dim=-1).reshape(batch, h*w+1, c)
         else:
-            input_style = input.reshape(batch, h*w, c)
+            input_style = attn_input.reshape(batch, h*w, c)
         # [N, HW+1, C]
         out1 = self.l2attn(input_style)
         out1 = self.ln1(out1 + input_style)
@@ -148,6 +152,9 @@ class SelfAttention(nn.Module):
         # [N, HW, C]
         output = output[:, :h*w, :]
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
+        output = self.to_output(output)
+        if self.skip:
+            output += input
         return output
 
 class TextEncoder(nn.Module):
