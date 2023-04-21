@@ -25,25 +25,14 @@ class ConstantInput(nn.Module):
 
 class StyledConv(nn.Module):
     def __init__(
-        self,
-        in_channel,
-        out_channel,
-        kernel_size,
-        style_dim,
-        upsample=False,
-        blur_kernel=[1, 3, 3, 1],
-        demodulate=True,
+        self, in_channel, out_channel, kernel_size, style_dim,
+        n_kernel=1, upsample=False, blur_kernel=[1, 3, 3, 1], demodulate=True,
     ):
         super().__init__()
 
         self.conv = ModulatedConv2d(
-            in_channel,
-            out_channel,
-            kernel_size,
-            style_dim,
-            upsample=upsample,
-            blur_kernel=blur_kernel,
-            demodulate=demodulate,
+            in_channel, out_channel, kernel_size, style_dim, n_kernel=n_kernel,
+            upsample=upsample, blur_kernel=blur_kernel, demodulate=demodulate,
         )
 
         self.noise = NoiseInjection()
@@ -90,6 +79,7 @@ class Generator(nn.Module):
         self, size, z_dim, n_mlp, tin_dim=0, tout_dim=0,
         channel_multiplier=2, blur_kernel=[1, 3, 3, 1], lr_mlp=0.01,
         use_self_attn=False, use_text_cond=False, use_multi_scale=False,
+        attn_res=[8, 16, 32],
     ):
         super().__init__()
 
@@ -114,15 +104,13 @@ class Generator(nn.Module):
         self.style = nn.Sequential(*layers)
 
         self.channels = {
-            4: 512,
-            8: 512,
-            16: 512,
-            32: 512,
-            64: 256 * channel_multiplier,
-            128: 128 * channel_multiplier,
-            256: 64 * channel_multiplier,
-            512: 32 * channel_multiplier,
-            1024: 16 * channel_multiplier,
+            4: 512, 8: 512, 16: 512, 32: 512, 64: 256 * channel_multiplier,
+            128: 128 * channel_multiplier, 256: 64 * channel_multiplier,
+            512: 32 * channel_multiplier, 1024: 16 * channel_multiplier,
+        }
+        n_kernels = {
+            4: 1, 8: 1, 16: 2, 32: 4, 64: 8,
+            128: 8, 256: 8, 512: 8, 1024: 8,
         }
 
         self.input = ConstantInput(self.channels[4])
@@ -148,21 +136,23 @@ class Generator(nn.Module):
             self.noises.register_buffer(f"noise_{layer_idx}", torch.randn(*shape))
 
         for i in range(3, self.log_size + 1):
-            out_channel = self.channels[2 ** i]
+            res = 2 ** i
+            out_channel = self.channels[res]
 
             self.convs.append(StyledConv(
                 in_channel, out_channel, 3, self.style_dim, upsample=True,
-                blur_kernel=blur_kernel,
+                blur_kernel=blur_kernel, n_kernel=n_kernels[res],
             ))
             self.convs.append(StyledConv(
-                out_channel, out_channel, 3, self.style_dim, blur_kernel=blur_kernel
+                out_channel, out_channel, 3, self.style_dim, blur_kernel=blur_kernel,
+                n_kernel=n_kernels[res],
             ))
 
             self.attns.append(
-                SelfAttention(out_channel, self.style_dim) if use_self_attn else None
+                SelfAttention(out_channel, self.style_dim) if use_self_attn and res in attn_res else None
             )
             self.attns.append(
-                CrossAttention(out_channel, tout_dim) if use_text_cond else None
+                CrossAttention(out_channel, tout_dim) if use_text_cond and res in attn_res else None
             )
 
             self.to_rgbs.append(ToRGB(out_channel, self.style_dim))
