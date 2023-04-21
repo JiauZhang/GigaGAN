@@ -114,13 +114,17 @@ class L2MultiheadAttention(nn.Module):
         return self.out_proj(PXAV)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channels, style_dim=None, embed_dim=16, num_heads=1, skip=True):
+    def __init__(self, in_channels, style_dim=None, embed_dim=None, num_heads=1, skip=False):
         super().__init__()
         self.skip = skip
         self.use_style = style_dim is not None
+        embed_dim = in_channels if embed_dim is None else embed_dim
+        self.use_conv = embed_dim != in_channels
         if self.use_style:
             self.embed_style = nn.Linear(style_dim, embed_dim)
-        self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
+        if self.use_conv:
+            self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
+            self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
         self.l2attn = L2MultiheadAttention(embed_dim, num_heads)
         self.ff = nn.Sequential(
             nn.GELU(),
@@ -130,10 +134,9 @@ class SelfAttention(nn.Module):
         )
         self.ln1 = nn.LayerNorm(embed_dim)
         self.ln2 = nn.LayerNorm(embed_dim)
-        self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
 
     def forward(self, input, style=None):
-        attn_input = self.to_input(input)
+        attn_input = self.to_input(input) if self.use_conv else input
         batch, c, h, w = attn_input.shape
         # input: [N, C, H, W] --> [N, H, W, C] --> [N, HWC]
         attn_input = attn_input.permute(0, 2, 3, 1).reshape(batch, h*w*c)
@@ -152,7 +155,7 @@ class SelfAttention(nn.Module):
         # [N, HW, C]
         output = output[:, :h*w, :]
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
-        output = self.to_output(output)
+        output = self.to_output(output) if self.use_conv else output
         if self.skip:
             output += input
         return output
@@ -181,13 +184,17 @@ class TextEncoder(nn.Module):
         return output
 
 class CrossAttention(nn.Module):
-    def __init__(self, in_channels, text_dim, embed_dim=16, num_heads=1, skip=True, bias=False):
+    def __init__(self, in_channels, text_dim, embed_dim=None, num_heads=1, skip=False, bias=False):
         super().__init__()
 
         self.in_channels = in_channels
+        embed_dim = in_channels if embed_dim is None else embed_dim
         self.embed_dim = embed_dim
         self.skip = skip
-        self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
+        self.use_conv = in_channels != embed_dim
+        if self.use_conv:
+            self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
+            self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
         self.to_q = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.to_k = nn.Linear(text_dim, embed_dim, bias=bias)
         self.to_v = nn.Linear(text_dim, embed_dim, bias=bias)
@@ -200,10 +207,9 @@ class CrossAttention(nn.Module):
         )
         self.ln1 = nn.LayerNorm(embed_dim)
         self.ln2 = nn.LayerNorm(embed_dim)
-        self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
 
     def forward(self, image_embeds, text_embeds):
-        ie = self.to_input(image_embeds)
+        ie = self.to_input(image_embeds) if self.use_conv else image_embeds
         batch, c, h, w = ie.shape
         # image_embeds: [N, C, H, W] --> [N, H, W, C] --> [N, HW, C]
         ie = ie.permute(0, 2, 3, 1).reshape(batch, h*w, c)
@@ -216,7 +222,7 @@ class CrossAttention(nn.Module):
         # [N, HW, C]
         output = self.ln2(out2 + out1)
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
-        output = self.to_output(output)
+        output = self.to_output(output)if self.use_conv else output
         if self.skip:
             output += image_embeds
         return output
