@@ -114,9 +114,8 @@ class L2MultiheadAttention(nn.Module):
         return self.out_proj(PXAV)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channels, style_dim=None, embed_dim=None, num_heads=1, skip=False):
+    def __init__(self, in_channels, style_dim=None, embed_dim=None, num_heads=1):
         super().__init__()
-        self.skip = skip
         self.use_style = style_dim is not None
         embed_dim = in_channels if embed_dim is None else embed_dim
         self.use_conv = embed_dim != in_channels
@@ -148,16 +147,15 @@ class SelfAttention(nn.Module):
         else:
             input_style = attn_input.reshape(batch, h*w, c)
         # [N, HW+1, C]
-        out1 = self.l2attn(input_style)
-        out1 = self.ln1(out1 + input_style)
-        out2 = self.ff(out1.view(-1, c)).view(batch, -1, c)
-        output = self.ln2(out2 + out1)
+        norm_is = self.ln1(input_style)
+        out1 = self.l2attn(norm_is) + input_style
+        norm_out1 = self.ln2(out1)
+        out2 = self.ff(norm_out1.view(-1, c)).view(batch, -1, c)
+        output = out2 + out1
         # [N, HW, C]
         output = output[:, :h*w, :]
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
         output = self.to_output(output) if self.use_conv else output
-        if self.skip:
-            output += input
         return output
 
 class TextEncoder(nn.Module):
@@ -184,13 +182,12 @@ class TextEncoder(nn.Module):
         return output
 
 class CrossAttention(nn.Module):
-    def __init__(self, in_channels, text_dim, embed_dim=None, num_heads=1, skip=False, bias=False):
+    def __init__(self, in_channels, text_dim, embed_dim=None, num_heads=1, bias=False):
         super().__init__()
 
         self.in_channels = in_channels
         embed_dim = in_channels if embed_dim is None else embed_dim
         self.embed_dim = embed_dim
-        self.skip = skip
         self.use_conv = in_channels != embed_dim
         if self.use_conv:
             self.to_input = nn.Conv2d(in_channels, embed_dim, 1, bias=True)
@@ -213,18 +210,17 @@ class CrossAttention(nn.Module):
         batch, c, h, w = ie.shape
         # image_embeds: [N, C, H, W] --> [N, H, W, C] --> [N, HW, C]
         ie = ie.permute(0, 2, 3, 1).reshape(batch, h*w, c)
-        query = self.to_q(ie)
+        norm_ie = self.ln1(ie)
+        query = self.to_q(norm_ie)
         key = self.to_k(text_embeds)
         value = self.to_v(text_embeds)
         attn_output, attn_output_weights = self.mha(query, key, value)
-        out1 = self.ln1(attn_output + ie)
-        out2 = self.ff(out1)
+        out1 = attn_output + ie
+        out2 = self.ff(self.ln2(out1))
         # [N, HW, C]
-        output = self.ln2(out2 + out1)
+        output = out2 + out1
         output = output.reshape(batch, h, w, c).permute(0, 3, 1, 2)
         output = self.to_output(output)if self.use_conv else output
-        if self.skip:
-            output += image_embeds
         return output
 
 class EqualConv2d(nn.Module):
