@@ -53,22 +53,6 @@ def g_nonsaturating_loss(fake_pred):
     return loss
 
 
-def g_path_regularize(fake_img, latents, mean_path_length, decay=0.01):
-    noise = torch.randn_like(fake_img) / math.sqrt(
-        fake_img.shape[2] * fake_img.shape[3]
-    )
-    grad, = autograd.grad(
-        outputs=(fake_img * noise).sum(), inputs=latents, create_graph=True
-    )
-    path_lengths = torch.sqrt(grad.pow(2).sum(2).mean(1))
-
-    path_mean = mean_path_length + decay * (path_lengths.mean() - mean_path_length)
-
-    path_penalty = (path_lengths - path_mean).pow(2).mean()
-
-    return path_penalty, path_mean.detach(), path_lengths
-
-
 def make_noise(batch, latent_dim, n_noise, device):
     if n_noise == 1:
         return torch.randn(batch, latent_dim, device=device)
@@ -102,14 +86,10 @@ def multi_scale(image):
 def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim, g_ema, device):
     loader = sample_data(loader)
     pbar = tqdm(range(args.iter))
-    mean_path_length = 0
 
     d_loss_val = 0
     r1_loss = torch.tensor(0.0, device=device)
     g_loss_val = 0
-    path_loss = torch.tensor(0.0, device=device)
-    path_lengths = torch.tensor(0.0, device=device)
-    mean_path_length_avg = 0
     loss_dict = {}
 
     g_module = generator
@@ -143,7 +123,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         requires_grad(generator, False)
         requires_grad(discriminator, True)
 
-        noise = mixing_noise(args.batch, args.latent, args.mixing, device)
+        noise = mixing_noise(args.batch, args.latent, -1, device)
         # fake_img: [4x, 8x, ..., 64x] or [64x]
         fake_img, _ = generator(noise, text_embeds)
         real_img_aug = real_img
@@ -174,7 +154,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         requires_grad(generator, True)
         requires_grad(discriminator, False)
 
-        noise = mixing_noise(args.batch, args.latent, args.mixing, device)
+        noise = mixing_noise(args.batch, args.latent, -1, device)
         fake_img, _ = generator(noise, text_embeds)
 
         fake_pred = discriminator(fake_img, text_embeds)
@@ -186,51 +166,19 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         g_loss.backward()
         g_optim.step()
 
-        g_regularize = i % args.g_reg_every == 0
-
-        if g_regularize:
-            path_batch_size = max(1, args.batch // args.path_batch_shrink)
-            noise = mixing_noise(path_batch_size, args.latent, args.mixing, device)
-            images, latents = generator(noise, text_embeds, return_latents=True)
-            fake_img = images[-1]
-
-            path_loss, mean_path_length, path_lengths = g_path_regularize(
-                fake_img, latents, mean_path_length
-            )
-
-            generator.zero_grad()
-            weighted_path_loss = args.path_regularize * args.g_reg_every * path_loss
-
-            if args.path_batch_shrink:
-                weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
-
-            weighted_path_loss.backward()
-
-            g_optim.step()
-
-            mean_path_length_avg = mean_path_length.item()
-
-        loss_dict["path"] = path_loss
-        loss_dict["path_length"] = path_lengths.mean()
-
         accumulate(g_ema, g_module, accum)
 
         loss_reduced = loss_dict
-
         d_loss_val = loss_reduced["d"].mean().item()
         g_loss_val = loss_reduced["g"].mean().item()
         r1_val = loss_reduced["r1"].mean().item()
-        path_loss_val = loss_reduced["path"].mean().item()
         real_score_val = loss_reduced["real_score"].mean().item()
         fake_score_val = loss_reduced["fake_score"].mean().item()
-        path_length_val = loss_reduced["path_length"].mean().item()
 
         pbar.set_description(
-            (
-                f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; "
-                f"path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}; "
-                f"augment: {ada_aug_p:.4f}"
-            )
+            f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; "
+            f"real_socre: {real_score_val:.4f}; fake_score: {fake_score_val:.4f}; "
+            f"augment: {ada_aug_p:.4f}"
         )
 
         if i % 100 == 0:
@@ -281,31 +229,10 @@ if __name__ == "__main__":
         "--r1", type=float, default=10, help="weight of the r1 regularization"
     )
     parser.add_argument(
-        "--path_regularize",
-        type=float,
-        default=2,
-        help="weight of the path length regularization",
-    )
-    parser.add_argument(
-        "--path_batch_shrink",
-        type=int,
-        default=2,
-        help="batch size reducing factor for the path length regularization (reduce memory consumption)",
-    )
-    parser.add_argument(
         "--d_reg_every",
         type=int,
         default=16,
         help="interval of the applying r1 regularization",
-    )
-    parser.add_argument(
-        "--g_reg_every",
-        type=int,
-        default=4,
-        help="interval of the applying path length regularization",
-    )
-    parser.add_argument(
-        "--mixing", type=float, default=0.9, help="probability of latent code mixing"
     )
     parser.add_argument(
         "--ckpt",
@@ -313,7 +240,7 @@ if __name__ == "__main__":
         default=None,
         help="path to the checkpoints to resume training",
     )
-    parser.add_argument("--lr", type=float, default=0.002, help="learning rate")
+    parser.add_argument("--lr", type=float, default=0.0025, help="learning rate")
     parser.add_argument(
         "--channel_multiplier",
         type=int,
@@ -373,19 +300,10 @@ if __name__ == "__main__":
     g_ema.eval()
     accumulate(g_ema, generator, 0)
 
-    g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
 
-    g_optim = optim.Adam(
-        generator.parameters(),
-        lr=args.lr * g_reg_ratio,
-        betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio),
-    )
-    d_optim = optim.Adam(
-        discriminator.parameters(),
-        lr=args.lr * d_reg_ratio,
-        betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
-    )
+    g_optim = optim.AdamW(generator.parameters(), lr=args.lr, betas=(0, 0.99))
+    d_optim = optim.AdamW(discriminator.parameters(), lr=args.lr, betas=(0, 0.99))
 
     if args.ckpt is not None:
         print("load model:", args.ckpt)
@@ -412,7 +330,8 @@ if __name__ == "__main__":
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
     ])
     def preprocess(data):
-        data['image'][0] = to_tensor(data['image'][0]).to(device)
+        for i in range(len(data['image'])):
+            data['image'][i] = to_tensor(data['image'][i])
         return data
     dataset = load_dataset('lambdalabs/pokemon-blip-captions', split="train", cache_dir='.')
     dataset = dataset.with_transform(preprocess)
