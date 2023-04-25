@@ -149,7 +149,7 @@ class Generator(nn.Module):
             ))
 
             self.attns.append(
-                SelfAttention(out_channel, self.style_dim) if use_self_attn and res in attn_res else None
+                SelfAttention(out_channel) if use_self_attn and res in attn_res else None
             )
             self.attns.append(
                 CrossAttention(out_channel, tout_dim) if use_text_cond and res in attn_res else None
