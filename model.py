@@ -405,14 +405,6 @@ class Discriminator(nn.Module):
             self.predictors.append(Predictor(in_channel, tout_dim) if use_multi_scale else None)
         self.text_encoder = TextEncoder(tin_dim, tout_dim) if use_text_cond else None
 
-        self.stddev_group = 4
-        self.stddev_feat = 1
-        self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
-        self.final_linear = nn.Sequential(
-            EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
-            EqualLinear(channels[4], 1),
-        )
-
     def forward(self, inputs, text_embeds=None):
         if self.use_text_cond:
             batch = text_embeds.shape[0]
@@ -432,19 +424,6 @@ class Discriminator(nn.Module):
             out = conv(out)
             out = attn(out) if attn else out
             i += 1
-
-        batch, channel, height, width = out.shape
-        group = min(batch, self.stddev_group)
-        stddev = out.view(
-            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
-        )
-        stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
-        stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
-        stddev = stddev.repeat(group, 1, height, width)
-        out = torch.cat([out, stddev], 1)
-        out = self.final_conv(out)
-        out = out.view(batch, -1)
-        out = self.final_linear(out)
-
+        out = torch.mean(out, dim=[1, 2, 3])
         return out
 
