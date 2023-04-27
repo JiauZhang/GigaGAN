@@ -248,7 +248,7 @@ class Generator(nn.Module):
         ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            out = self_attn(out, latent[:, i + 1]) if self_attn else out
+            out = self_attn(out) if self_attn else out
             out = cross_attn(out, t_local) if cross_attn else out
             skip = to_rgb(out, latent[:, i + 2], skip)
             append_if(self.use_multi_scale, images, skip)

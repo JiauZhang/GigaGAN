@@ -118,6 +118,7 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         image_text = next(loader)
         # [4x, 8x, ..., 64x] or [64x]
         real_img = multi_scale(image_text['image']) if args.use_multi_scale else [image_text['image']]
+        real_img = [img.to(args.device) for img in real_img]
         text_embeds = text_encoder(image_text['text']) if args.use_text_cond else None
 
         requires_grad(generator, False)
@@ -126,11 +127,10 @@ def train(args, loader, generator, discriminator, text_encoder, g_optim, d_optim
         noise = mixing_noise(args.batch, args.latent, -1, device)
         # fake_img: [4x, 8x, ..., 64x] or [64x]
         fake_img, _ = generator(noise, text_embeds)
-        real_img_aug = real_img
 
         # [batch, 10]
         fake_pred = discriminator(fake_img, text_embeds)
-        real_pred = discriminator(real_img_aug, text_embeds)
+        real_pred = discriminator(real_img, text_embeds)
         d_loss = d_logistic_loss(real_pred, fake_pred)
 
         loss_dict["d"] = d_loss
