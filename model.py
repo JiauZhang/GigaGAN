@@ -1,7 +1,7 @@
 import math
 import random
 import torch
-from torch import nn
+from torch import nn, optim
 from torch.nn import functional as F
 from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
 from layers import (
@@ -203,6 +203,11 @@ class Generator(nn.Module):
             return images, latent
         else:
             return images, None
+
+    def set_optim(self, lr=0.0025, betas=(0, 0.99)):
+        if not (self.use_self_attn or self.use_text_cond):
+            g_optim = optim.AdamW(self.parameters(), lr=lr, betas=betas)
+            return g_optim
 
 
 class ConvLayer(nn.Sequential):

@@ -302,7 +302,7 @@ if __name__ == "__main__":
 
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
 
-    g_optim = optim.AdamW(generator.parameters(), lr=args.lr, betas=(0, 0.99))
+    g_optim = generator.set_optim(lr=args.lr)
     d_optim = optim.AdamW(discriminator.parameters(), lr=args.lr, betas=(0, 0.99))
 
     if args.ckpt is not None:
