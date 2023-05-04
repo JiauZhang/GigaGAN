@@ -401,3 +401,58 @@ class NoiseInjection(nn.Module):
             noise = image.new_empty(batch, 1, height, width).normal_()
 
         return image + self.weight * noise
+
+class ConstantInput(nn.Module):
+    def __init__(self, channel, size=4):
+        super().__init__()
+
+        self.input = nn.Parameter(torch.randn(1, channel, size, size))
+
+    def forward(self, input):
+        batch = input.shape[0]
+        out = self.input.repeat(batch, 1, 1, 1)
+
+        return out
+
+class StyledConv(nn.Module):
+    def __init__(
+        self, in_channel, out_channel, kernel_size, style_dim,
+        n_kernel=1, upsample=False, blur_kernel=[1, 3, 3, 1], demodulate=True,
+    ):
+        super().__init__()
+
+        self.conv = ModulatedConv2d(
+            in_channel, out_channel, kernel_size, style_dim, n_kernel=n_kernel,
+            upsample=upsample, blur_kernel=blur_kernel, demodulate=demodulate,
+        )
+
+        self.noise = NoiseInjection()
+        self.activate = FusedLeakyReLU(out_channel)
+
+    def forward(self, input, style, noise=None):
+        out = self.conv(input, style)
+        out = self.noise(out, noise=noise)
+        out = self.activate(out)
+
+        return out
+
+class ToRGB(nn.Module):
+    def __init__(self, in_channel, style_dim, upsample=True, blur_kernel=[1, 3, 3, 1]):
+        super().__init__()
+
+        if upsample:
+            self.upsample = Upsample(blur_kernel)
+
+        self.conv = ModulatedConv2d(in_channel, 3, 1, style_dim, demodulate=False)
+        self.bias = nn.Parameter(torch.zeros(1, 3, 1, 1))
+
+    def forward(self, input, style, skip=None):
+        out = self.conv(input, style)
+        out = out + self.bias
+
+        if skip is not None:
+            skip = self.upsample(skip)
+
+            out = out + skip
+
+        return out

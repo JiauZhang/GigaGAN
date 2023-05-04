@@ -5,70 +5,10 @@ from torch import nn
 from torch.nn import functional as F
 from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
 from layers import (
-    PixelNorm, make_kernel, Upsample, Downsample, Blur, EqualConv2d,
+    PixelNorm, ToRGB, ConstantInput, StyledConv, Blur, EqualConv2d,
     ModulatedConv2d, EqualLinear, NoiseInjection,
     SelfAttention, CrossAttention, TextEncoder,
 )
-
-class ConstantInput(nn.Module):
-    def __init__(self, channel, size=4):
-        super().__init__()
-
-        self.input = nn.Parameter(torch.randn(1, channel, size, size))
-
-    def forward(self, input):
-        batch = input.shape[0]
-        out = self.input.repeat(batch, 1, 1, 1)
-
-        return out
-
-
-class StyledConv(nn.Module):
-    def __init__(
-        self, in_channel, out_channel, kernel_size, style_dim,
-        n_kernel=1, upsample=False, blur_kernel=[1, 3, 3, 1], demodulate=True,
-    ):
-        super().__init__()
-
-        self.conv = ModulatedConv2d(
-            in_channel, out_channel, kernel_size, style_dim, n_kernel=n_kernel,
-            upsample=upsample, blur_kernel=blur_kernel, demodulate=demodulate,
-        )
-
-        self.noise = NoiseInjection()
-        # self.bias = nn.Parameter(torch.zeros(1, out_channel, 1, 1))
-        # self.activate = ScaledLeakyReLU(0.2)
-        self.activate = FusedLeakyReLU(out_channel)
-
-    def forward(self, input, style, noise=None):
-        out = self.conv(input, style)
-        out = self.noise(out, noise=noise)
-        # out = out + self.bias
-        out = self.activate(out)
-
-        return out
-
-
-class ToRGB(nn.Module):
-    def __init__(self, in_channel, style_dim, upsample=True, blur_kernel=[1, 3, 3, 1]):
-        super().__init__()
-
-        if upsample:
-            self.upsample = Upsample(blur_kernel)
-
-        self.conv = ModulatedConv2d(in_channel, 3, 1, style_dim, demodulate=False)
-        self.bias = nn.Parameter(torch.zeros(1, 3, 1, 1))
-
-    def forward(self, input, style, skip=None):
-        out = self.conv(input, style)
-        out = out + self.bias
-
-        if skip is not None:
-            skip = self.upsample(skip)
-
-            out = out + skip
-
-        return out
 
 def append_if(condition, var, elem):
     if (condition):
