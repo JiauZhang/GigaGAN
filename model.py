@@ -1,6 +1,6 @@
 import math
 import random
-import torch
+import torch, inspect
 from torch import nn, optim
 from torch.nn import functional as F
 from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
@@ -204,11 +204,32 @@ class Generator(nn.Module):
         else:
             return images, None
 
-    def set_optim(self, lr=0.0025, betas=(0, 0.99)):
+    def set_optim(self, lr=0.0025, betas=(0, 0.99), weight_decay= 0.00001, attn_weight_decay=0.01):
         if not (self.use_self_attn or self.use_text_cond):
-            g_optim = optim.AdamW(self.parameters(), lr=lr, betas=betas)
-            return g_optim
+            g_optim = optim.AdamW(self.parameters(), lr=lr, betas=betas, weight_decay=weight_decay)
+        else:
+            param_dict = {pn: p for pn, p in self.named_parameters()}
+            decay, attn_decay = set(param_dict.keys()), set()
+            attn_types = (SelfAttention, CrossAttention)
+            for mn, m in self.named_modules():
+                if isinstance(m, attn_types):
+                    for pn, p in m.named_parameters():
+                        # full param name
+                        mpn = '%s.%s' % (mn, pn) if mn else pn
+                        attn_decay.add(mpn)
+                        decay.remove(mpn)
 
+            optim_groups = [
+                {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
+                {"params": [param_dict[pn] for pn in sorted(list(attn_decay))], "weight_decay": attn_weight_decay},
+            ]
+            # new PyTorch nightly has a new 'fused' option for AdamW that is much faster
+            use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+            print(f"using fused AdamW: {use_fused}")
+            extra_args = dict(fused=True) if use_fused else dict()
+            g_optim = optim.AdamW(optim_groups, lr=lr, betas=betas, **extra_args)
+
+        return g_optim
 
 class ConvLayer(nn.Sequential):
     def __init__(

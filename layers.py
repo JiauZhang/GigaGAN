@@ -123,7 +123,6 @@ class SelfAttention(nn.Module):
             self.to_output = nn.Conv2d(embed_dim, in_channels, 1, bias=True)
         self.l2attn = L2MultiheadAttention(embed_dim, num_heads)
         self.ff = nn.Sequential(
-            nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
@@ -188,7 +187,6 @@ class CrossAttention(nn.Module):
         self.to_v = nn.Linear(text_dim, embed_dim, bias=bias)
         self.mha = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
         self.ff = nn.Sequential(
-            nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
