@@ -297,41 +297,38 @@ class ResBlock(nn.Module):
         return out
 
 class Predictor(nn.Module):
-    def __init__(self, in_channel, tin_dim):
+    def __init__(self, in_channel, tin_dim=0):
         super().__init__()
-        layers = []
-        inc, outc = in_channel, 256
-        for i in range(4):
-            layers.append(nn.Conv2d(inc, outc, 1))
-            layers.append(nn.GELU())
-            inc = outc
-        self.conv1 = nn.Sequential(*layers)
-        self.global_avg = nn.AdaptiveAvgPool2d(1)
-        self.V = nn.Linear(tin_dim, 256)
-        self.conv2 = nn.Sequential(
+        if tin_dim != 0:
+            self.text_block = nn.ModuleList()
+            inc, outc = in_channel, 256
+            for i in range(4):
+                self.text_block.append(nn.ModuleList([
+                    ModulatedConv2d(inc, outc, 1, tin_dim),
+                    nn.LeakyReLU()
+                ]))
+                inc = outc
+            self.text_block.append(nn.Conv2d(outc, 1, 1))
+        else:
+            self.text_block = None
+        self.image_block = nn.Sequential(
             nn.Conv2d(in_channel, 256, 1),
-            nn.GELU(),
+            nn.LeakyReLU(),
+            nn.Conv2d(256, 1, 1),
         )
 
-    def forward(self, image_embeds, text_embeds):
+    def forward(self, image_embeds, text_embeds=None):
         # [n, c, h, w] --> [n, 256, h, w]
-        out1 = self.conv1(image_embeds)
-        # [n, 256]
-        out1 = self.global_avg(out1).squeeze()
-        # [n, tin_dim] --> [n, 256]
-        out2 = self.V(text_embeds)
-        # [n, 256] x [n, 256]
-        batch = image_embeds.shape[0]
-        if batch != out2.shape[0]:
-            out2 = out2.repeat(batch // out2.shape[0], 1)
-        out = torch.mul(out1, out2).sum(dim=1, keepdim=True)
-        # [n, c, h, w] --> [n, 256, h, w]
-        out3 = self.conv2(image_embeds)
-        # [n, 256, h, w] --> [n, 256]
-        out3 = self.global_avg(out3).squeeze()
-        # [n, 256] --> [n, 1]
-        out = (out + out3).sum(dim=1, keepdim=True)
-        return out
+        score = self.image_block(image_embeds)
+        score = torch.mean(score, dim=[1, 2, 3]) # [n]
+        # [n, tin_dim]
+        if self.text_block is not None:
+            text_score = image_embeds
+            for conv, act in self.text_block[:-1]:
+                text_score = act(conv(text_score, text_embeds))
+            text_score = self.text_block[-1](text_score)
+            score += torch.mean(text_score, dim=[1, 2, 3])
+        return score
 
 class Discriminator(nn.Module):
     def __init__(self, size, tin_dim=0, tout_dim=0, channel_multiplier=2,
