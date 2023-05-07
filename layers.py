@@ -454,3 +454,15 @@ class ToRGB(nn.Module):
             out = out + skip
 
         return out
+
+class FromRGB(nn.Module):
+    def __init__(self, in_channel, out_channel):
+        super().__init__()
+        self.convs = nn.Sequential(
+            nn.Conv2d(in_channel, 256, 3, padding='same'),
+            nn.LeakyReLU(),
+            nn.Conv2d(256, out_channel, 1),
+        )
+
+    def forward(self, input):
+        return self.convs(input)

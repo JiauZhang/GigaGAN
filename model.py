@@ -6,7 +6,7 @@ from torch.nn import functional as F
 from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d, conv2d_gradfix
 from layers import (
     PixelNorm, ToRGB, ConstantInput, StyledConv, Blur, EqualConv2d,
-    ModulatedConv2d, EqualLinear, NoiseInjection,
+    ModulatedConv2d, EqualLinear, FromRGB,
     SelfAttention, CrossAttention, TextEncoder,
 )
 
@@ -338,55 +338,65 @@ class Discriminator(nn.Module):
         super().__init__()
 
         channels = {
-            4: 512,
-            8: 512,
-            16: 512,
-            32: 512,
-            64: 256 * channel_multiplier,
-            128: 128 * channel_multiplier,
-            256: 64 * channel_multiplier,
-            512: 32 * channel_multiplier,
-            1024: 16 * channel_multiplier,
+            2: 512, 4: 512, 8: 512, 16: 512, 32: 512, 64: 256 * channel_multiplier,
+            128: 128 * channel_multiplier, 256: 64 * channel_multiplier,
+            512: 32 * channel_multiplier, 1024: 16 * channel_multiplier,
         }
 
         self.use_multi_scale = use_multi_scale
         self.use_self_attn = use_self_attn
         self.use_text_cond = use_text_cond
-        self.heads = nn.ModuleList()
-        self.convs = nn.ModuleList([ConvLayer(3, channels[size], 1)])
+        self.convs = nn.ModuleList([ResBlock(3, channels[size])])
         self.attns = nn.ModuleList([None])
-        self.predictors = nn.ModuleList()
+        self.heads = nn.ModuleList([None])
+        self.predictors = nn.ModuleList([nn.ModuleList([
+            Predictor(channels[size], tout_dim) if use_multi_scale else None
+        ])])
         log_size = int(math.log(size, 2))
 
         in_channel = channels[size]
+        count = 2
         for i in range(log_size, 2, -1):
             out_channel = channels[2 ** (i - 1)]
             self.convs.append(ResBlock(in_channel, out_channel, blur_kernel))
             self.attns.append(SelfAttention(out_channel) if use_multi_scale else None)
-            self.heads.append(ConvLayer(3, in_channel, 1) if use_multi_scale else None)
+            # input is [32x, 16x, 8x, 4x, 2x]
+            self.heads.append(FromRGB(3, in_channel) if use_multi_scale else None)
+            self.predictors.append(
+                nn.ModuleList([
+                    Predictor(out_channel, tout_dim) for _ in range(count)
+                ]) if use_multi_scale else None
+            )
+            count += 1
             in_channel = out_channel
-            self.predictors.append(Predictor(in_channel, tout_dim) if use_multi_scale else None)
         self.text_encoder = TextEncoder(tin_dim, tout_dim) if use_text_cond else None
+        loss_ratio = torch.tensor([1.] * (len(self.predictors)-1) + [2.])
+        self.loss_ratio = (loss_ratio / torch.sum(loss_ratio)).detach()
 
     def forward(self, inputs, text_embeds=None):
         if self.use_text_cond:
             batch = text_embeds.shape[0]
             # [n, seq_len, tin_dim] --> [n, tout_dim]
             text_embeds = self.text_encoder(text_embeds)[:, -1]
-            # inputs: 4x --> 8x --> ... --> 64x
-            in_len = len(inputs)
-            # 64x --> 32x --> ... --> 4x
-            input_heads = []
-            for i in range(len(inputs)):
-                input = inputs[in_len-i-1]
-                input_heads.append(self.heads[i](input))
 
-        outputs, i = [], 0
-        out = inputs[-1]
-        for conv, attn in zip(self.convs, self.attns):
-            out = conv(out)
-            out = attn(out) if attn else out
-            i += 1
-        out = torch.mean(out, dim=[1, 2, 3])
-        return out
+        i, score = -1, 0
+        features = [inputs[i]]
+        for conv, attn, head, pred in zip(
+            self.convs, self.attns, self.heads, self.predictors,
+        ):
+            if head is not None:
+                features.append(head(inputs[i]))
+            pred_inp = []
+            for f in features:
+                out = conv(f)
+                out = attn(out) if attn else out
+                pred_inp.append(out)
+            for j in range(len(features) if self.use_multi_scale else 0):
+                score += pred[j](pred_inp[j])
+            features = pred_inp
+            i = i - 1 if self.use_multi_scale else -1
+
+        if not self.use_multi_scale:
+            score += torch.mean(out, dim=[1, 2, 3])
+        return score
 
