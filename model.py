@@ -370,7 +370,7 @@ class Discriminator(nn.Module):
             count += 1
             in_channel = out_channel
         self.text_encoder = TextEncoder(tin_dim, tout_dim) if use_text_cond else None
-        loss_ratio = torch.tensor([1.] * (len(self.predictors)-1) + [2.])
+        loss_ratio = torch.tensor([2.] + [1.] * (len(self.predictors)-1))
         self.loss_ratio = (loss_ratio / torch.sum(loss_ratio)).detach()
 
     def forward(self, inputs, text_embeds=None):
@@ -392,7 +392,7 @@ class Discriminator(nn.Module):
                 out = attn(out) if attn else out
                 pred_inp.append(out)
             for j in range(len(features) if self.use_multi_scale else 0):
-                score += pred[j](pred_inp[j])
+                score += self.loss_ratio[j] * pred[j](pred_inp[j])
             features = pred_inp
             i = i - 1 if self.use_multi_scale else -1
 
