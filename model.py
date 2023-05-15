@@ -188,8 +188,8 @@ class Generator(nn.Module):
         ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            out = self_attn(out) if self_attn else out
-            out = cross_attn(out, t_local) if cross_attn else out
+            if self_attn: out = self_attn(out)
+            if cross_attn: out = cross_attn(out, t_local)
             skip = to_rgb(out, latent[:, i + 2], skip)
             append_if(self.use_multi_scale, images, skip)
 
@@ -359,7 +359,7 @@ class Discriminator(nn.Module):
         for i in range(log_size, 2, -1):
             out_channel = channels[2 ** (i - 1)]
             self.convs.append(ResBlock(in_channel, out_channel, blur_kernel))
-            self.attns.append(SelfAttention(out_channel) if use_multi_scale else None)
+            self.attns.append(SelfAttention(out_channel) if use_self_attn else None)
             # input is [32x, 16x, 8x, 4x, 2x]
             self.heads.append(FromRGB(3, in_channel) if use_multi_scale else None)
             self.predictors.append(
@@ -389,7 +389,7 @@ class Discriminator(nn.Module):
             pred_inp = []
             for f in features:
                 out = conv(f)
-                out = attn(out) if attn else out
+                if attn: out = attn(out)
                 pred_inp.append(out)
             for j in range(len(features) if self.use_multi_scale else 0):
                 score += self.loss_ratio[j] * pred[j](pred_inp[j])

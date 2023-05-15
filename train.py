@@ -281,22 +281,23 @@ if __name__ == "__main__":
     args.tout_dim = 0
     args.use_multi_scale = False
     args.use_text_cond = False
-    args.use_self_attn = False
+    args.g_use_self_attn = False
+    args.d_use_self_attn = False
 
     device = args.device
     generator = Generator(
         args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
         channel_multiplier=args.channel_multiplier, use_multi_scale=args.use_multi_scale,
-        use_text_cond=args.use_text_cond, use_self_attn=args.use_self_attn,
+        use_text_cond=args.use_text_cond, use_self_attn=args.g_use_self_attn,
     ).to(device)
     discriminator = Discriminator(
         args.size, args.tin_dim, args.tout_dim, channel_multiplier=args.channel_multiplier,
-        use_multi_scale=args.use_multi_scale,
+        use_multi_scale=args.use_multi_scale, use_self_attn=args.d_use_self_attn,
     ).to(device)
     g_ema = Generator(
         args.size, args.latent, args.n_mlp, args.tin_dim, args.tout_dim,
         channel_multiplier=args.channel_multiplier, use_multi_scale=args.use_multi_scale,
-        use_text_cond=args.use_text_cond, use_self_attn=args.use_self_attn,
+        use_text_cond=args.use_text_cond, use_self_attn=args.g_use_self_attn,
     ).to(device)
     g_ema.eval()
     accumulate(g_ema, generator, 0)

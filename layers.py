@@ -82,8 +82,10 @@ class L2MultiheadAttention(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
-        nn.init.xavier_uniform_(self.q_weight.reshape(self.embed_dim, self.embed_dim))
-        nn.init.xavier_uniform_(self.v_weight.reshape(self.embed_dim, self.embed_dim))
+        nn.init.zeros_(self.q_weight)
+        nn.init.zeros_(self.v_weight)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
 
     def forward(self, x):
         """
