@@ -6,5 +6,10 @@ Implementation of [GigaGAN: Scaling up GANs for Text-to-Image Synthesis](https:/
 ```shell
 pip install transformers==4.27.4 datasets
 ```
+
+| iteration | sample | batch | adaptive kernel | g_use_self_attn | d_use_self_attn | multi-scale loss |
+| :-------: | :----: | :---: | :-------------: | :-------------: | :-------------: | :--------------: |
+| 330000 | <img src="./sample/g_330000.png" width="256" alt="input image"/> | 16 | √ | √ | × | × |
+
 # References
 - https://github.com/rosinality/stylegan2-pytorch
